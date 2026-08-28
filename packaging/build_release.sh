@@ -53,6 +53,21 @@ codesign --verify --strict --verbose=1 build/CADViewer.app 2>&1 | tail -2 || tru
 
 echo "==> staging"
 ditto build/CADViewer.app "$STAGE/CAD Viewer.app"
+
+# Notarise the app itself, not just the disk image. A ticket stapled to the DMG
+# covers only the DMG, and a cask copies the app out of it -- so without this
+# the installed app carries no ticket and has to reach Apple on first launch.
+# Staple the staged copy rather than build/CADViewer.app: macOS protects a
+# stapled bundle, and a protected bundle in the build tree stops CMake from
+# rewriting Info.plist on the next configure.
+if [ -n "$NOTARIZE_PROFILE" ]; then
+  echo "==> notarising the app (this takes a few minutes)"
+  ditto -c -k --keepParent "$STAGE/CAD Viewer.app" "$STAGE/CADViewer.zip"
+  xcrun notarytool submit "$STAGE/CADViewer.zip" \
+        --keychain-profile "$NOTARIZE_PROFILE" --wait
+  rm -f "$STAGE/CADViewer.zip"
+  xcrun stapler staple "$STAGE/CAD Viewer.app"
+fi
 ln -s /Applications "$STAGE/Applications"
 
 echo "==> creating $DMG"
@@ -68,11 +83,13 @@ echo "$DMG  ($(du -h "$DMG" | cut -f1))"
 codesign -dv build/CADViewer.app 2>&1 | grep -E "Identifier=|TeamIdentifier=" || true
 
 if [ -n "$NOTARIZE_PROFILE" ]; then
-  echo "==> notarising (this takes a few minutes)"
+  echo "==> notarising the disk image (this takes a few minutes)"
   xcrun notarytool submit "$DMG" --keychain-profile "$NOTARIZE_PROFILE" --wait
   echo "==> stapling"
   xcrun stapler staple "$DMG"
   spctl -a -vv -t install "$DMG" 2>&1 | tail -2
+  echo "==> ticket check"
+  xcrun stapler validate "$DMG"
   exit 0
 fi
 

@@ -17,6 +17,20 @@ typedef NS_ENUM(NSInteger, CADInteractionMode) {
 // 0 follows the system appearance; 1+ are explicit looks. See backgroundNames.
 @property(nonatomic) NSInteger backgroundStyle;
 + (NSArray<NSString *> *)backgroundNames;
+// Applies a look without writing it to preferences; used by the headless
+// flags, which must not change what the user sees next launch.
+- (void)previewBackgroundStyle:(NSInteger)style;
+
+// Live settings. Each persists and applies immediately; quality and
+// anti-aliasing rebuild what they have to.
+@property(nonatomic) NSInteger unitStyle;            // 0 mm, 1 cm, 2 m, 3 in
+@property(nonatomic) BOOL showViewCube;
+@property(nonatomic) NSInteger shadingMode;          // 0 shaded+edges, 1 shaded, 2 wireframe
+@property(nonatomic) NSInteger tessellationQuality;  // 0 coarse, 1 normal, 2 fine
+@property(nonatomic) NSInteger antialiasingSamples;  // 1, 2, 4 or 8
++ (NSArray<NSString *> *)unitNames;
++ (NSArray<NSString *> *)shadingNames;
++ (NSArray<NSString *> *)qualityNames;
 - (instancetype)initHeadlessWithFrame:(CGRect)frame device:(id<MTLDevice>)device;
 - (BOOL)loadDocumentAtPath:(NSString *)path error:(NSString **)outError;
 - (void)frameModel;

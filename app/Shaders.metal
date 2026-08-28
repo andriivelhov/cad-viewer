@@ -18,8 +18,8 @@ typedef struct {
   float4 viewport;
   uint selectedEntityId;
   uint hoverEntityId;
+  uint shadingMode;
   uint pad0;
-  uint pad1;
 } Uniforms;
 #endif
 using namespace metal;
@@ -99,6 +99,16 @@ fragment FragmentOut fsShaded(ShadedOut in [[stage_in]],
   const float key = saturate(dot(n, normalize(u.lightDirection.xyz)));
   const float3 lit = u.baseColor.rgb * (ambient * 0.55 + key * 0.75);
 
+  // Wireframe: paint surfaces in the background gradient so they still occlude
+  // the edges behind them, which is what makes hidden-line removal work.
+  if (u.shadingMode == 2u) {
+    const float t = 1.0 - in.clipPosition.y / max(u.viewport.y, 1.0);
+    FragmentOut wire;
+    wire.color = float4(mix(u.backgroundBottom.rgb, u.backgroundTop.rgb, t), 1.0);
+    wire.faceId = in.faceId;
+    return wire;
+  }
+
   float3 color = lit;
   if (in.selected != 0u)
     color = mix(color, float3(1.00, 0.58, 0.16), 0.72);
@@ -163,6 +173,15 @@ vertex EdgeOut vsEdge(uint vid [[vertex_id]],
 fragment FragmentOut fsEdge(EdgeOut in [[stage_in]],
                             constant Uniforms& u [[buffer(1)]]) {
   FragmentOut out;
+  // In wireframe the edges sit on the background rather than on a lit surface,
+  // so they have to contrast with it: dark ink on a light ground, light ink on
+  // a dark one. This keeps every background preset readable.
+  const float groundLuma =
+      dot(u.backgroundBottom.rgb, float3(0.299, 0.587, 0.114));
+  const float3 ink = (u.shadingMode == 2u && groundLuma < 0.35)
+                         ? float3(0.86, 0.89, 0.93)
+                         : float3(0.10, 0.11, 0.13);
+
   // Same highlight language as faces: amber selected, blue hovered. Edges are
   // thin, so they take the colour at full strength rather than a tint.
   if (in.selected != 0u)
@@ -170,7 +189,7 @@ fragment FragmentOut fsEdge(EdgeOut in [[stage_in]],
   else if (in.edgeId == u.hoverEntityId)
     out.color = float4(0.30, 0.66, 1.00, 1.0);
   else
-    out.color = float4(0.10, 0.11, 0.13, 1.0);
+    out.color = float4(ink, 1.0);
   out.faceId = in.edgeId;
   return out;
 }

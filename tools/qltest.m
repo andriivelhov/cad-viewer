@@ -22,8 +22,11 @@ int main(int argc, const char **argv) {
             const char *kind = rep.type == QLThumbnailRepresentationTypeIcon
                                    ? "generic icon (extension NOT used)"
                                    : "rendered thumbnail";
-            printf("type=%s size=%.0fx%.0f\n", kind, rep.contentRect.size.width,
-                   rep.contentRect.size.height);
+            // contentRect is only filled in for icon representations, so
+            // reporting it made real thumbnails look like 0x0 failures. Measure
+            // the image that actually came back.
+            printf("type=%s size=%zux%zu\n", kind, CGImageGetWidth(rep.CGImage),
+                   CGImageGetHeight(rep.CGImage));
             NSData *png = [NSBitmapImageRep
                 representationOfImageRepsInArray:@[ [[NSBitmapImageRep alloc]
                                                      initWithCGImage:rep.CGImage] ]

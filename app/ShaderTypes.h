@@ -26,6 +26,6 @@ typedef struct {
   simd_float4 viewport;        // x,y = drawable px; z = edge half-width; w = marker half-size
   unsigned int selectedEntityId;
   unsigned int hoverEntityId;
+  unsigned int shadingMode;  // 0 shaded, 2 wireframe (surfaces blend away)
   unsigned int pad0;
-  unsigned int pad1;
 } Uniforms;

@@ -32,6 +32,8 @@ and give exact numbers.**
   and files get real thumbnails instead of a generic icon.
 - **Behaves like a Mac app.** Multiple windows, ⌘W closes one and the app stays,
   a view cube for orientation, light and dark.
+- **Settings that matter.** Units, background, shading, level of detail and
+  anti-aliasing — ⌘, and every open window updates.
 
 ## Measurement you can trust
 
@@ -87,6 +89,12 @@ Two QuickLook extensions ship inside the app:
 - **Thumbnails** — real model renders in place of a generic document icon
 - **Preview** — press space and rotate the part in the preview pane
 
+One caveat, and it is not specific to this app: for file types that macOS
+declares itself — STL, OBJ, GLB — the system's own thumbnail generator, or any
+other QuickLook plugin you have installed, can take precedence, and the choice
+is not the app's to make. The types CAD Viewer declares — STEP, IGES, BREP,
+glTF, VRML — are always its own.
+
 ![Assembly](docs/assembly.png)
 
 ## Orientation and looks
@@ -98,6 +106,21 @@ is resolved by the same pass that picks geometry.
 Five backgrounds, under **View ▸ Background**, remembered between launches.
 
 ![Backgrounds](docs/backgrounds.png)
+
+## Settings
+
+**⌘,** opens Settings; changes apply immediately to every open window and are
+remembered.
+
+| | |
+|---|---|
+| **Units** | Millimetres, centimetres, metres or inches. Only the display changes — measurement is always computed in millimetres from the geometry. |
+| **Background** | Automatic (follows the system theme) or a fixed scene. |
+| **Shading** | Shaded with edges, shaded, or wireframe with hidden lines removed. |
+| **Detail** | How finely curved faces are tessellated. Trades load time against smoothness; measurements are unaffected, because they come from the geometry rather than the mesh. |
+| **Anti-aliasing** | Off, 2×, 4× or 8× multisampling. |
+
+![Settings](docs/settings.png)
 
 ## Install
 
@@ -150,10 +173,12 @@ one actually cost.
 ## Not yet
 
 - Textures and materials are read by OCCT but not displayed; everything renders
-  in one matte grey
+  in one matte grey (the Settings checkbox for it is disabled until it is)
 - No component/assembly sidebar
 - No section planes
 - PLY cannot be read (OCCT's PLY support is write-only)
+- Finder thumbnails for system-declared types (STL, OBJ, GLB) may be produced
+  by macOS or another installed QuickLook plugin instead of this app
 
 ## Licence
 

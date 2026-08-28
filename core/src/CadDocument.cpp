@@ -154,8 +154,24 @@ std::vector<FormatInfo> Document::supportedFormats() {
   return out;
 }
 
+// OCCT's readers narrate to stdout by default, which corrupts any output a
+// caller means to parse, and they colourise it with ANSI escapes on the way.
+// Move the chatter to stderr once, so diagnostics survive but stdout stays
+// machine-readable.
+void routeOcctMessagesToStderr() {
+  const Handle(Message_Messenger)& messenger = Message::DefaultMessenger();
+  messenger->RemovePrinters(STANDARD_TYPE(Message_PrinterOStream));
+  Handle(Message_PrinterOStream) printer =
+      new Message_PrinterOStream("cerr", Standard_False, Message_Warning);
+  printer->SetToColorize(Standard_False);
+  messenger->AddPrinter(printer);
+}
+
 std::unique_ptr<Document> Document::load(const std::string& path,
                                          std::string& error) {
+  static const bool routed = (routeOcctMessagesToStderr(), true);
+  (void)routed;
+
   const std::string ext = lowerExt(path);
   const FormatSpec* spec = findSpec(ext);
   if (!spec) {

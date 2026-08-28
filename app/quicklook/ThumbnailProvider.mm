@@ -4,6 +4,7 @@
 
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
 #import <MetalKit/MetalKit.h>
+#import <os/log.h>
 
 #import "CADView.h"
 
@@ -53,6 +54,11 @@
                                                   error ?: @"could not read"}]);
       return;
     }
+
+    // Enough to tell whether Finder reached us at all, and at what size,
+    // without putting the user's file names into the system log.
+    os_log_debug(OS_LOG_DEFAULT, "cadthumb request %.0fx%.0f @%.2gx",
+                 points.width, points.height, request.scale);
 
     CGImageRef image = [view renderImageOfSize:pixels];
     if (!image) {

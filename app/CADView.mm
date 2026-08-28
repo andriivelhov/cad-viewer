@@ -15,6 +15,9 @@
 @interface CADView ()
 @property(nonatomic, readonly) void *pickBufferContents;
 @property(nonatomic, readonly) void *hoverBufferContents;
+- (void)uploadMeshBuffers;
+- (void)applyStoredSettings;
+- (NSString *)formatLength:(double)millimetres;
 - (void)updateSnapPreviewForEntity:(uint32_t)entityId atPixel:(simd_float2)pixel;
 - (void)updateCursorWorldAtPixel:(simd_float2)pixel depth:(float)depth;
 - (void)clearHoverInFlight;
@@ -31,9 +34,9 @@
 
 namespace {
 
-// 4x MSAA: enough to clean up CAD silhouettes and 2 px feature edges without
-// the memory cost of 8x on a Retina drawable.
-constexpr NSUInteger kSampleCount = 4;
+// 4x MSAA by default: enough to clean up CAD silhouettes and 2 px feature edges
+// without the memory cost of 8x on a Retina drawable. Adjustable in Settings.
+constexpr NSUInteger kDefaultSampleCount = 4;
 
 // Shared by the projection and the pan scale; they must agree or panning
 // cannot track the pointer.
@@ -137,7 +140,8 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
 
   cadcore::MeasureRef _refs[2];
   int _refCount;
-  simd_float3 _measurePoints[2];  // where the measurement is actually taken
+  simd_float3 _measurePoints[2];
+  double _lastMeasuredDistance;  // where the measurement is actually taken
   BOOL _hasMeasureLine;
   simd_float3 _snapPreview;
   BOOL _hasSnapPreview;
@@ -147,6 +151,7 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   CGSize _pickSizeOverride;   // headless renders pick at their own size
   CGSize _renderSizeOverride;  // and rasterise at their own size
   BOOL _headless;
+  NSUInteger _sampleCount;
   NSPoint _lastGestureTranslation;
   BOOL _orbitPivotFromGesture;
   id<MTLBuffer> _markerBuffer;
@@ -173,12 +178,18 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
     self.depthStencilPixelFormat = MTLPixelFormatDepth32Float;
     self.clearDepth = 1.0;
     self.clearColor = MTLClearColorMake(0, 0, 0, 0);
-    self.sampleCount = kSampleCount;
+    NSInteger stored =
+        [NSUserDefaults.standardUserDefaults integerForKey:@"AntialiasingSamples"];
+    _sampleCount = (stored == 1 || stored == 2 || stored == 4 || stored == 8)
+                       ? (NSUInteger)stored
+                       : kDefaultSampleCount;
+    self.sampleCount = _sampleCount;
     self.enableSetNeedsDisplay = YES;
     self.paused = YES;
     _hoverEntity = FACE_ID_NONE;
     _backgroundStyle =
         [NSUserDefaults.standardUserDefaults integerForKey:@"BackgroundStyle"];
+    [self applyStoredSettings];
     _azimuth = -0.9f;
     _elevation = 0.5f;
     _distance = 300.0f;
@@ -243,7 +254,7 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
         d.colorAttachments[0].pixelFormat = self.colorPixelFormat;
         d.colorAttachments[1].pixelFormat = MTLPixelFormatR32Uint;
         d.depthAttachmentPixelFormat = self.depthStencilPixelFormat;
-        d.rasterSampleCount = kSampleCount;
+        d.rasterSampleCount = _sampleCount;
         return d;
       };
 
@@ -639,6 +650,28 @@ typedef struct {
     return NO;
   }
 
+  // Assign before uploading: uploadMeshBuffers reads _doc.
+  _doc = std::move(doc);
+  [self uploadMeshBuffers];
+
+  _selection.clear();
+  [self uploadSelectionFlags];
+
+  [self frameModel];
+
+  const auto &s = _doc->stats();
+  [self report:[NSString stringWithFormat:
+      @"%s  ·  %d faces  ·  %zu triangles  ·  %s",
+      _doc->format().id.c_str(), s.faces, mesh.indices.size() / 3,
+      _doc->caps().exactGeometry ? "exact measurement"
+                                 : "mesh only — measurements approximate"]];
+  [self setNeedsDisplay:YES];
+  return YES;
+}
+
+- (void)uploadMeshBuffers {
+  if (!_doc) return;
+  const cadcore::RenderMesh &mesh = _doc->renderMesh();
   _vertexBuffer = [self.device
       newBufferWithBytes:mesh.vertices.data()
                   length:mesh.vertices.size() * sizeof(cadcore::RenderVertex)
@@ -673,20 +706,6 @@ typedef struct {
                                                  options:MTLResourceStorageModeShared];
   _edgeSelectedBuffer = [self.device newBufferWithLength:_edgeCount * sizeof(uint32_t)
                                                  options:MTLResourceStorageModeShared];
-  _selection.clear();
-  [self uploadSelectionFlags];
-
-  _doc = std::move(doc);
-  [self frameModel];
-
-  const auto &s = _doc->stats();
-  [self report:[NSString stringWithFormat:
-      @"%s  ·  %d faces  ·  %zu triangles  ·  %s",
-      _doc->format().id.c_str(), s.faces, mesh.indices.size() / 3,
-      _doc->caps().exactGeometry ? "exact measurement"
-                                 : "mesh only — measurements approximate"]];
-  [self setNeedsDisplay:YES];
-  return YES;
 }
 
 - (void)frameModel {
@@ -772,11 +791,102 @@ typedef struct {
   if (self.statusHandler) self.statusHandler(text);
 }
 
+#pragma mark - Settings
+
++ (NSArray<NSString *> *)unitNames {
+  return @[ @"Millimetres", @"Centimetres", @"Metres", @"Inches" ];
+}
++ (NSArray<NSString *> *)shadingNames {
+  return @[ @"Shaded with edges", @"Shaded", @"Wireframe" ];
+}
++ (NSArray<NSString *> *)qualityNames {
+  return @[ @"Draft", @"Normal", @"Fine" ];
+}
+
+- (cadcore::Unit)unit {
+  switch (_unitStyle) {
+    case 1: return cadcore::Unit::Centimetres;
+    case 2: return cadcore::Unit::Metres;
+    case 3: return cadcore::Unit::Inches;
+    default: return cadcore::Unit::Millimetres;
+  }
+}
+
+- (NSString *)formatLength:(double)millimetres {
+  return @(cadcore::formatLength(millimetres, [self unit]).c_str());
+}
+
+- (void)setUnitStyle:(NSInteger)style {
+  _unitStyle = style;
+  [NSUserDefaults.standardUserDefaults setInteger:style forKey:@"UnitStyle"];
+  // Re-state whatever is on screen in the new unit.
+  if (_hasMeasureLine)
+    [self setMeasureChipText:[self formatLength:_lastMeasuredDistance]];
+  [self setNeedsDisplay:YES];
+}
+
+- (void)setShowViewCube:(BOOL)show {
+  _showViewCube = show;
+  [NSUserDefaults.standardUserDefaults setBool:show forKey:@"ShowViewCube"];
+  [self setNeedsDisplay:YES];
+}
+
+- (void)setShadingMode:(NSInteger)mode {
+  _shadingMode = mode;
+  [NSUserDefaults.standardUserDefaults setInteger:mode forKey:@"ShadingMode"];
+  [self setNeedsDisplay:YES];
+}
+
+- (void)setTessellationQuality:(NSInteger)quality {
+  _tessellationQuality = quality;
+  [NSUserDefaults.standardUserDefaults setInteger:quality forKey:@"TessellationQuality"];
+  if (!_doc) return;
+  // Draft is coarser and faster; fine is denser and slower. The mesh has to be
+  // rebuilt and re-uploaded, so this is the one setting that costs real time.
+  static const double multipliers[] = {3.0, 1.0, 0.35};
+  _doc->retessellate(multipliers[std::clamp<NSInteger>(quality, 0, 2)]);
+  [self uploadMeshBuffers];
+  [self setNeedsDisplay:YES];
+}
+
+- (void)setAntialiasingSamples:(NSInteger)samples {
+  if (samples != 1 && samples != 2 && samples != 4 && samples != 8) samples = 4;
+  _antialiasingSamples = samples;
+  [NSUserDefaults.standardUserDefaults setInteger:samples forKey:@"AntialiasingSamples"];
+  if ((NSUInteger)samples == _sampleCount) return;
+
+  // Sample count is baked into every pipeline and every multisampled texture,
+  // so both have to be rebuilt.
+  _sampleCount = (NSUInteger)samples;
+  self.sampleCount = _sampleCount;
+  _faceIdTexture = nil;
+  _depthTexture = nil;
+  [self buildPipelines];
+  [self setNeedsDisplay:YES];
+}
+
+- (void)applyStoredSettings {
+  NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+  _unitStyle = [d integerForKey:@"UnitStyle"];
+  _shadingMode = [d integerForKey:@"ShadingMode"];
+  _tessellationQuality = [d objectForKey:@"TessellationQuality"]
+                             ? [d integerForKey:@"TessellationQuality"]
+                             : 1;  // Normal
+  _showViewCube = [d objectForKey:@"ShowViewCube"] ? [d boolForKey:@"ShowViewCube"]
+                                                   : YES;
+  _antialiasingSamples = (NSInteger)_sampleCount;
+}
+
 #pragma mark - Background
 
 + (NSArray<NSString *> *)backgroundNames {
   return @[ @"Automatic", @"Studio Dark", @"Studio Light", @"Midnight",
             @"Blueprint", @"Sunset" ];
+}
+
+- (void)previewBackgroundStyle:(NSInteger)style {
+  _backgroundStyle = style;
+  [self setNeedsDisplay:YES];
 }
 
 - (void)setBackgroundStyle:(NSInteger)style {
@@ -897,6 +1007,7 @@ typedef struct {
   [self backgroundTop:&u.backgroundTop
                bottom:&u.backgroundBottom
                 model:&u.baseColor];
+  u.shadingMode = (unsigned int)_shadingMode;
   u.selectedEntityId = FACE_ID_NONE;  // selection is per-entity flags now
   u.hoverEntityId = _hoverEntity;
   _lastViewProjection = u.modelViewProjection;
@@ -915,7 +1026,7 @@ typedef struct {
                                   height:(NSUInteger)size.height
                                mipmapped:NO];
   d.textureType = MTLTextureType2DMultisample;
-  d.sampleCount = kSampleCount;
+  d.sampleCount = _sampleCount;
   d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   d.storageMode = MTLStorageModePrivate;
   _faceIdTexture = [self.device newTextureWithDescriptor:d];
@@ -926,7 +1037,7 @@ typedef struct {
                                   height:(NSUInteger)size.height
                                mipmapped:NO];
   dz.textureType = MTLTextureType2DMultisample;
-  dz.sampleCount = kSampleCount;
+  dz.sampleCount = _sampleCount;
   dz.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   dz.storageMode = MTLStorageModePrivate;
   _depthTexture = [self.device newTextureWithDescriptor:dz];
@@ -982,7 +1093,8 @@ typedef struct {
   if (markerCount > 0)
     memcpy(_markerBuffer.contents, packed, sizeof(float) * 3 * markerCount);
 
-  if (_edgeIndexCount > 0) {
+  // "Shaded" hides the feature edges; the other two modes draw them.
+  if (_edgeIndexCount > 0 && _shadingMode != 1) {
     [enc setRenderPipelineState:_edgePipeline];
     [enc setDepthStencilState:_depthLessEqual];
     // Depth offset is applied in the vertex shader; keep the fixed-function
@@ -1040,7 +1152,7 @@ typedef struct {
   // The cube belongs to the app window only. A QuickLook preview is for
   // looking at the part, and a thumbnail is an image of the part - neither
   // wants a UI widget baked into it.
-  if (_cubePipeline && !_headless && !_navigationOnly) {
+  if (_cubePipeline && _showViewCube && !_headless && !_navigationOnly) {
     [enc setRenderPipelineState:_cubePipeline];
     [enc setDepthStencilState:_depthLess];
     [enc setCullMode:MTLCullModeNone];
@@ -1062,7 +1174,7 @@ typedef struct {
       texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                    width:w height:h mipmapped:NO];
   msaa.textureType = MTLTextureType2DMultisample;
-  msaa.sampleCount = kSampleCount;
+  msaa.sampleCount = _sampleCount;
   msaa.usage = MTLTextureUsageRenderTarget;
   msaa.storageMode = MTLStorageModePrivate;
   id<MTLTexture> colorMS = [self.device newTextureWithDescriptor:msaa];
@@ -1165,7 +1277,7 @@ typedef struct {
                                   height:(NSUInteger)size.height
                                mipmapped:NO];
   cd.textureType = MTLTextureType2DMultisample;
-  cd.sampleCount = kSampleCount;
+  cd.sampleCount = _sampleCount;
   cd.usage = MTLTextureUsageRenderTarget;
   cd.storageMode = MTLStorageModePrivate;
   id<MTLTexture> color = [self.device newTextureWithDescriptor:cd];
@@ -1533,14 +1645,15 @@ destinationBytesPerImage:sizeof(float)];
                                        float(result.pointB[1]),
                                        float(result.pointB[2]));
   _hasMeasureLine = YES;
-  [self setMeasureChipText:[NSString stringWithFormat:@"%.4f mm",
-                                                      result.distance]];
+  _lastMeasuredDistance = result.distance;
+  [self setMeasureChipText:[self formatLength:result.distance]];
 
   const simd_float3 delta = _measurePoints[1] - _measurePoints[0];
   [self report:[NSString stringWithFormat:
-      @"%@ → %@    distance %.4f mm    Δx %.4f  Δy %.4f  Δz %.4f",
-      _lastRefDescription ?: @"", what, result.distance, delta.x, delta.y,
-      delta.z]];
+      @"%@ → %@    distance %@    Δx %@  Δy %@  Δz %@",
+      _lastRefDescription ?: @"", what, [self formatLength:result.distance],
+      [self formatLength:delta.x], [self formatLength:delta.y],
+      [self formatLength:delta.z]]];
   [self setNeedsDisplay:YES];
 }
 
@@ -1573,11 +1686,13 @@ destinationBytesPerImage:sizeof(float)];
     const cadcore::EdgeInfo edge = _doc->edgeInfo(index);
     if (!edge.valid) return [NSString stringWithFormat:@"edge %u", index];
     NSMutableString *text = [NSMutableString
-        stringWithFormat:@"edge %u    %s    length %.4f mm", index,
-                         edge.curveType.c_str(), edge.length];
+        stringWithFormat:@"edge %u    %s    length %@", index,
+                         edge.curveType.c_str(),
+                         [self formatLength:edge.length]];
     if (edge.hasRadius)
-      [text appendFormat:@"    ⌀ %.4f mm  (r %.4f)", edge.radius * 2.0,
-                         edge.radius];
+      [text appendFormat:@"    ⌀ %@  (r %@)",
+                         [self formatLength:edge.radius * 2.0],
+                         [self formatLength:edge.radius]];
     if (edge.closed) [text appendString:@"    closed"];
     return text;
   }

@@ -1,4 +1,6 @@
 #import <Cocoa/Cocoa.h>
+
+#include <algorithm>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #import "CADView.h"
@@ -7,7 +9,167 @@
 
 @class ViewerWindowController;
 
-@interface AppDelegate : NSObject <NSApplicationDelegate>
+// Settings apply to every open window and persist, so the app looks and
+// behaves the same next launch.
+@protocol SettingsDelegate <NSObject>
+- (void)applySettings:(void (^)(CADView *viewer))block;
+- (CADView *)anyViewer;
+@end
+
+@interface SettingsWindowController : NSWindowController
+- (instancetype)initWithOwner:(id<SettingsDelegate>)owner;
+@end
+
+@implementation SettingsWindowController {
+  __weak id<SettingsDelegate> _owner;
+  NSPopUpButton *_units, *_background, *_shading, *_quality, *_antialiasing;
+  NSButton *_viewCube, *_materials;
+}
+
+- (instancetype)initWithOwner:(id<SettingsDelegate>)owner {
+  NSWindow *window = [[NSWindow alloc]
+      initWithContentRect:NSMakeRect(0, 0, 460, 300)
+                styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  if ((self = [super initWithWindow:window])) {
+    _owner = owner;
+    window.title = @"Settings";
+    [window center];
+
+    CADView *viewer = [owner anyViewer];
+
+    _units = [self popupWithTitles:[CADView unitNames]
+                          selected:viewer.unitStyle
+                            action:@selector(unitsChanged:)];
+    _background = [self popupWithTitles:[CADView backgroundNames]
+                               selected:viewer.backgroundStyle
+                                 action:@selector(backgroundChanged:)];
+    _shading = [self popupWithTitles:[CADView shadingNames]
+                            selected:viewer.shadingMode
+                              action:@selector(shadingChanged:)];
+    _quality = [self popupWithTitles:[CADView qualityNames]
+                            selected:viewer.tessellationQuality
+                              action:@selector(qualityChanged:)];
+    NSInteger aaIndex = 2;
+    switch (viewer.antialiasingSamples) {
+      case 1: aaIndex = 0; break;
+      case 2: aaIndex = 1; break;
+      case 8: aaIndex = 3; break;
+      default: aaIndex = 2; break;
+    }
+    _antialiasing = [self popupWithTitles:@[ @"Off", @"2×", @"4×", @"8×" ]
+                                 selected:aaIndex
+                                   action:@selector(antialiasingChanged:)];
+
+    _viewCube = [NSButton checkboxWithTitle:@"Show the view cube"
+                                     target:self
+                                     action:@selector(viewCubeChanged:)];
+    _viewCube.state = viewer.showViewCube ? NSControlStateValueOn
+                                          : NSControlStateValueOff;
+
+    _materials = [NSButton checkboxWithTitle:@"Use materials from the file"
+                                      target:nil
+                                      action:nil];
+    _materials.enabled = NO;  // honest: not implemented yet
+    _materials.toolTip = @"Not implemented yet. Textures and materials are read "
+                         @"from OBJ and glTF files but are not displayed; "
+                         @"everything renders in one matte grey.";
+
+    NSGridView *grid = [NSGridView gridViewWithViews:@[
+      @[ [self label:@"Units"], _units ],
+      @[ [self label:@"Background"], _background ],
+      @[ [self label:@"Shading"], _shading ],
+      @[ [self label:@"Detail"], _quality ],
+      @[ [self label:@"Anti-aliasing"], _antialiasing ],
+      @[ [NSGridCell emptyContentView], _viewCube ],
+      @[ [NSGridCell emptyContentView], _materials ],
+    ]];
+    grid.rowSpacing = 12;
+    grid.columnSpacing = 12;
+    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
+    grid.translatesAutoresizingMaskIntoConstraints = NO;
+
+    NSTextField *note = [NSTextField
+        wrappingLabelWithString:@"Detail trades load time against how smooth "
+                                @"curved faces look; changing it rebuilds the "
+                                @"model. Measurements stay exact either way — "
+                                @"they come from the geometry, not the mesh."];
+    note.font = [NSFont systemFontOfSize:11];
+    note.textColor = NSColor.secondaryLabelColor;
+    note.translatesAutoresizingMaskIntoConstraints = NO;
+
+    NSView *content = window.contentView;
+    [content addSubview:grid];
+    [content addSubview:note];
+    // Pin all four edges and fix only the width: the window then takes its
+    // height from the laid-out controls, so the note cannot be clipped when the
+    // text or the control heights change.
+    [NSLayoutConstraint activateConstraints:@[
+      [content.widthAnchor constraintEqualToConstant:460],
+      [grid.topAnchor constraintEqualToAnchor:content.topAnchor constant:24],
+      [grid.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:24],
+      [grid.trailingAnchor constraintLessThanOrEqualToAnchor:content.trailingAnchor
+                                                    constant:-24],
+      [note.topAnchor constraintEqualToAnchor:grid.bottomAnchor constant:20],
+      [note.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:24],
+      [note.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-24],
+      [note.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-20],
+    ]];
+    [content layoutSubtreeIfNeeded];
+    [window setContentSize:content.fittingSize];
+    [window center];
+  }
+  return self;
+}
+
+- (NSTextField *)label:(NSString *)text {
+  NSTextField *field = [NSTextField labelWithString:text];
+  field.alignment = NSTextAlignmentRight;
+  return field;
+}
+
+- (NSPopUpButton *)popupWithTitles:(NSArray<NSString *> *)titles
+                          selected:(NSInteger)index
+                            action:(SEL)action {
+  NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect
+                                                    pullsDown:NO];
+  [popup addItemsWithTitles:titles];
+  [popup selectItemAtIndex:std::clamp<NSInteger>(index, 0, titles.count - 1)];
+  popup.target = self;
+  popup.action = action;
+  return popup;
+}
+
+- (void)unitsChanged:(id)s {
+  const NSInteger v = _units.indexOfSelectedItem;
+  [_owner applySettings:^(CADView *viewer) { viewer.unitStyle = v; }];
+}
+- (void)backgroundChanged:(id)s {
+  const NSInteger v = _background.indexOfSelectedItem;
+  [_owner applySettings:^(CADView *viewer) { viewer.backgroundStyle = v; }];
+}
+- (void)shadingChanged:(id)s {
+  const NSInteger v = _shading.indexOfSelectedItem;
+  [_owner applySettings:^(CADView *viewer) { viewer.shadingMode = v; }];
+}
+- (void)qualityChanged:(id)s {
+  const NSInteger v = _quality.indexOfSelectedItem;
+  [_owner applySettings:^(CADView *viewer) { viewer.tessellationQuality = v; }];
+}
+- (void)antialiasingChanged:(id)s {
+  static const NSInteger samples[] = {1, 2, 4, 8};
+  const NSInteger v = samples[std::clamp<NSInteger>(_antialiasing.indexOfSelectedItem, 0, 3)];
+  [_owner applySettings:^(CADView *viewer) { viewer.antialiasingSamples = v; }];
+}
+- (void)viewCubeChanged:(id)s {
+  const BOOL on = _viewCube.state == NSControlStateValueOn;
+  [_owner applySettings:^(CADView *viewer) { viewer.showViewCube = on; }];
+}
+
+@end
+
+@interface AppDelegate : NSObject <NSApplicationDelegate, SettingsDelegate>
 - (void)windowControllerWillClose:(ViewerWindowController *)controller;
 @end
 
@@ -97,6 +259,19 @@
   NSString *_pendingOpenPath;
   NSPoint _cascade;
   NSMenu *_recentsMenu;
+  SettingsWindowController *_settings;
+}
+
+- (void)applySettings:(void (^)(CADView *))block {
+  for (ViewerWindowController *c in _windows) block(c.viewer);
+}
+
+- (CADView *)anyViewer { return self.activeViewer; }
+
+- (void)showSettings:(id)sender {
+  if (!_settings) _settings = [[SettingsWindowController alloc] initWithOwner:self];
+  [_settings showWindow:nil];
+  [_settings.window makeKeyAndOrderFront:nil];
 }
 
 #pragma mark - Windows
@@ -240,6 +415,10 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
   NSMenuItem *appItem = [NSMenuItem new];
   [bar addItem:appItem];
   NSMenu *appMenu = [NSMenu new];
+  [appMenu addItemWithTitle:@"Settings…"
+                     action:@selector(showSettings:)
+              keyEquivalent:@","];
+  [appMenu addItem:[NSMenuItem separatorItem]];
   [appMenu addItemWithTitle:@"Hide CAD Viewer"
                      action:@selector(hide:)
               keyEquivalent:@"h"];
@@ -369,7 +548,8 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
   const BOOL headless =
       [args containsObject:@"--render"] || [args containsObject:@"--pick"] ||
       [args containsObject:@"--cliptest"] || [args containsObject:@"--points"] ||
-      [args containsObject:@"--measure"] || [args containsObject:@"--chromeshot"];
+      [args containsObject:@"--measure"] || [args containsObject:@"--chromeshot"] ||
+      [args containsObject:@"--settingsshot"] || [args containsObject:@"--thumb"];
 
   // A malformed headless flag used to fall through and silently open a window,
   // which looks exactly like a hang when the caller is waiting on stdout.
@@ -406,7 +586,7 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
   if ([args containsObject:@"--transparent"]) view.transparentBackground = YES;
   const NSUInteger bgIdx = [args indexOfObject:@"--background"];
   if (bgIdx != NSNotFound && bgIdx + 1 < args.count)
-    view.backgroundStyle = args[bgIdx + 1].integerValue;
+    [view previewBackgroundStyle:args[bgIdx + 1].integerValue];
 
   const NSUInteger measIdx = [args indexOfObject:@"--measure"];
   if (measIdx != NSNotFound && measIdx + 4 < args.count) {
@@ -419,6 +599,55 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
     if (![args containsObject:@"--render"] &&
         ![args containsObject:@"--chromeshot"])
       [self exitHeadless:0];
+  }
+
+  // Renders the Settings window to a file: it cannot be screenshotted from a
+  // terminal, and this proves it builds without a crash.
+  const NSUInteger settingsIdx = [args indexOfObject:@"--settingsshot"];
+  if (settingsIdx != NSNotFound && settingsIdx + 1 < args.count) {
+    [self showSettings:nil];
+    NSView *content = _settings.window.contentView;
+    [content layoutSubtreeIfNeeded];
+    NSBitmapImageRep *rep =
+        [content bitmapImageRepForCachingDisplayInRect:content.bounds];
+    [content cacheDisplayInRect:content.bounds toBitmapImageRep:rep];
+    NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG
+                                    properties:@{}];
+    const BOOL ok = [png writeToFile:args[settingsIdx + 1] atomically:YES];
+    printf("%s\n", ok ? "settings captured" : "settings capture failed");
+    [self exitHeadless:ok ? 0 : 1];
+  }
+
+  // Reproduces the QuickLook thumbnail provider's exact path -- headless init,
+  // transparent background, renderImageOfSize: at the requested pixel size --
+  // so thumbnail bugs can be chased without going through Finder.
+  const NSUInteger thumbIdx = [args indexOfObject:@"--thumb"];
+  if (thumbIdx != NSNotFound && thumbIdx + 3 < args.count) {
+    const CGFloat w = args[thumbIdx + 2].doubleValue;
+    const CGFloat h = args[thumbIdx + 3].doubleValue;
+    // The provider sizes the view in points but renders at pixel size, so the
+    // scale has to be reproducible here too.
+    const CGFloat scale =
+        (thumbIdx + 4 < args.count && ![args[thumbIdx + 4] hasPrefix:@"-"])
+            ? args[thumbIdx + 4].doubleValue
+            : 1.0;
+    CADView *shot =
+        [[CADView alloc] initHeadlessWithFrame:NSMakeRect(0, 0, w, h)
+                                        device:MTLCreateSystemDefaultDevice()];
+    shot.transparentBackground = YES;
+    NSString *err = nil;
+    if (![shot loadDocumentAtPath:args[1] error:&err]) {
+      fprintf(stderr, "%s\n", err.UTF8String);
+      [self exitHeadless:1];
+    }
+    CGImageRef img = [shot renderImageOfSize:CGSizeMake(w * scale, h * scale)];
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
+    CGImageRelease(img);
+    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:args[thumbIdx + 1]
+         atomically:YES];
+    printf("thumb %.0fx%.0f @%gx\n", w, h, scale);
+    [self exitHeadless:0];
   }
 
   const NSUInteger chromeIdx = [args indexOfObject:@"--chromeshot"];

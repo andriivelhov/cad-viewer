@@ -121,6 +121,21 @@ Against a plate built to known dimensions:
 - Volume 57887.279 mm^3, matches 60000 - pi*67.25*10 by hand
 - 500-instance assembly (7000 faces, 598k triangles): 513 ms read, 10 ms tessellate
 
+`tools/regress.py` re-runs these end to end against a built app: every format
+loads and frames without clipping, exact geometry comes back to four decimals,
+the same edge reports correctly in all four units, detail level changes the mesh
+but not the measurement, and every shading mode and background renders. It is
+Python rather than shell because the checks pass coordinate pairs as separate
+arguments and shells disagree about splitting them.
+
+    python3 tools/regress.py [path/to/CADViewer.app]
+
+Two lessons are baked into it. OCCT's readers narrate to **stdout**, which
+corrupted anything trying to parse the output, so the messenger is redirected to
+stderr once at first load. And `qltest` used to report `rep.contentRect`, which
+is only populated for *icon* representations - real thumbnails came back as
+`0x0` and looked like failures. It measures the returned `CGImage` now.
+
 ## Viewer
 
 ```sh
@@ -400,10 +415,43 @@ above and -Y from below - getting that wrong renders TOP upside down.
   silently ignored without `BRepTools::Clean` first. And chordal deviation alone
   does not control facet count on curved faces - the angular limit dominates, so
   a quality setting has to move both.
+- **Staple the staged copy, not the build tree.** A ticket on the DMG covers
+  only the DMG, and a cask copies the app out of it, so the app needs its own
+  ticket. Stapling `build/CADViewer.app` gets one - and then write-protects the
+  build tree so hard that the next `cmake` cannot rewrite `Info.plist`
+  (`System Error: Operation not permitted`). The release script stages first and
+  staples the staged copy.
 - **Finder wraps a thumbnail in a white document page** unless the file's type
   conforms to `public.3d-content`. The system's own STL type does; ours did not
   until it was added to `UTTypeConformsTo`. Once it does, a *transparent*
   thumbnail is the right answer - the model floats on Finder's background.
+
+## Settings
+
+`SettingsWindowController` in `app/main.mm`. Each control writes through a
+`CADView` setter that both applies the change and persists it to
+`NSUserDefaults`, and the window then asks the app delegate to replay the same
+block over every open viewer, so a change is immediate everywhere rather than
+only in the front window.
+
+| setting | key | note |
+|---|---|---|
+| Units | `UnitStyle` | display only; all measurement is computed in mm |
+| Background | `BackgroundStyle` | Automatic follows the system theme |
+| Shading | `ShadingMode` | 0 shaded with edges, 1 shaded, 2 wireframe |
+| Detail | `TessellationQuality` | deflection multipliers 3.0 / 1.0 / 0.35 |
+| Anti-aliasing | `AntialiasingSamples` | MSAA sample count, 1/2/4/8 |
+
+Wireframe is hidden-line removal rather than a depth-test change: the surfaces
+are still drawn and still write depth, but the fragment shader paints them in
+the background gradient, so edges behind a face are correctly occluded. Because
+the edges then sit on the background rather than on a lit surface, they pick
+their colour from the background's luminance - dark ink on a light ground,
+light ink on a dark one - or they vanish into it.
+
+The materials checkbox is present but disabled, with a tooltip saying why.
+Showing a control that silently does nothing is worse than showing one that
+admits it is not implemented.
 
 ## Known rough edges
 
@@ -411,12 +459,19 @@ above and -Y from below - getting that wrong renders TOP upside down.
   stapled, macOS write-protects it and a plain `cmake --build` fails with
   `ld: can't write output file`. A PRE_BUILD step removes `_CodeSignature`
   first; every path that needs a signature reapplies one.
-- **OCCT writes progress and warnings to stderr.** Still unfixed; the app needs
-  a `Message_Printer` installed to silence it. Harmless in the GUI, noisy on the
-  command line (`2>/dev/null` everywhere in this README is why).
 - **IGES claims exact geometry when it is degraded.** The format loses solids
   and turns analytic cylinders into NURBS, so `caps().exactGeometry` is
   optimistic there. It probably wants a third fidelity tier.
+- **Thumbnails for system-declared types are not reliably ours.** For
+  `public.standard-tesselated-geometry-format`, `public.geometry-definition-format`
+  and `org.khronos.glb`, the system's own generator - or any third-party
+  QuickLook plugin the user has installed - can win, and the extension is simply
+  never invoked. Confirmed by logging from inside the provider: for `.obj` the
+  request never arrives, while `.step` does. Setting the app as the default
+  *role handler* for the type does not change it; QuickLook does not choose that
+  way. macOS's own render is a straight-on front view, which for a flat plate is
+  an uninformative grey bar. The types this app *exports* - STEP, IGES, BREP,
+  glTF, VRML - are always thumbnailed by the extension.
 - **PLY cannot be read** - OCCT's PLY provider is write-only. Needs ModelIO
   (free, in the OS) or tinyply.
 - **Textures and materials are never displayed.** `RenderVertex` carries no UVs
