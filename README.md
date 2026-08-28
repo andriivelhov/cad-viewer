@@ -102,8 +102,13 @@ Five backgrounds, under **View ▸ Background**, remembered between launches.
 ## Install
 
 ```sh
-brew install --cask andriivelhov/tap/cad-viewer
+brew tap andriivelhov/tap     # once
+brew install --cask cadviewer
 ```
+
+Recent Homebrew versions ask you to trust a third-party tap before they will
+load a cask from it. If you see *"Refusing to load cask … from untrusted tap"*,
+run `brew trust andriivelhov/tap` and install again.
 
 Or download the [latest release](../../releases/latest) and drag it to
 Applications. The app is Developer ID signed and notarized, so it opens without
