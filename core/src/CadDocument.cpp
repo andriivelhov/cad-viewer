@@ -4,6 +4,7 @@
 #include <BRepBndLib.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
@@ -47,6 +48,7 @@
 #include <cstdlib>
 #include <functional>
 #include <map>
+#include <string>
 
 namespace cadcore {
 
@@ -57,6 +59,8 @@ struct Document::Impl {
   std::vector<TopoDS_Edge> edgesById;  // index == edgeId
   RenderMesh mesh;
   bool meshBuilt = false;
+  double deflectionMultiplier = 1.0;
+  double angularDegrees = 20.0;
 };
 
 namespace {
@@ -341,6 +345,7 @@ std::vector<CylinderFace> Document::cylinders(std::size_t limit) const {
 }
 
 bool Document::tessellate(double deflection, double angularDeg) {
+  if (angularDeg <= 0) angularDeg = m_impl->angularDegrees;
   if (m_impl->shape.IsNull()) return false;
   if (deflection <= 0) {
     // Scale-relative deflection: absolute values wreck either tiny parts or
@@ -352,6 +357,7 @@ bool Document::tessellate(double deflection, double angularDeg) {
     }
     deflection = std::max(diag * 1e-3, 1e-4);
   }
+  deflection *= m_impl->deflectionMultiplier;
   m_deflection = deflection;
   try {
     BRepMesh_IncrementalMesh mesher(m_impl->shape, deflection, Standard_False,
@@ -398,6 +404,21 @@ const char* surfaceTypeName(GeomAbs_SurfaceType t) {
 }
 
 }  // namespace
+
+void Document::retessellate(double deflectionMultiplier) {
+  m_impl->deflectionMultiplier = std::max(deflectionMultiplier, 0.05);
+  // Chordal deviation alone does not control facet count on curved faces: the
+  // angular limit dominates there, so a finer setting must tighten both or a
+  // cylinder keeps exactly the same number of facets.
+  m_impl->angularDegrees = std::clamp(20.0 * deflectionMultiplier, 6.0, 45.0);
+  // BRepMesh leaves an existing triangulation alone, so without clearing it
+  // first the new deflection is silently ignored.
+  BRepTools::Clean(m_impl->shape);
+  m_impl->mesh = RenderMesh{};
+  m_impl->facesById.clear();
+  m_impl->edgesById.clear();
+  m_impl->meshBuilt = false;
+}
 
 const RenderMesh& Document::renderMesh(double deflection) {
   if (m_impl->meshBuilt) return m_impl->mesh;
@@ -1003,6 +1024,44 @@ double Document::totalArea(const std::vector<std::uint32_t>& faceIds) const {
     }
   }
   return total;
+}
+
+}  // namespace cadcore
+
+namespace cadcore {
+
+double scaleFromMillimetres(Unit unit) {
+  switch (unit) {
+    case Unit::Centimetres: return 0.1;
+    case Unit::Metres: return 0.001;
+    case Unit::Inches: return 1.0 / 25.4;
+    default: return 1.0;
+  }
+}
+
+const char* unitSuffix(Unit unit) {
+  switch (unit) {
+    case Unit::Centimetres: return "cm";
+    case Unit::Metres: return "m";
+    case Unit::Inches: return "in";
+    default: return "mm";
+  }
+}
+
+std::string formatLength(double millimetres, Unit unit) {
+  const double value = millimetres * scaleFromMillimetres(unit);
+  // Keep roughly the same physical precision whatever the unit: four decimals
+  // of a millimetre is 0.1 micron, and the same absolute precision in metres
+  // needs three more digits.
+  int decimals = 4;
+  if (unit == Unit::Metres) decimals = 7;
+  else if (unit == Unit::Centimetres) decimals = 5;
+  else if (unit == Unit::Inches) decimals = 5;
+
+  char buffer[64];
+  std::snprintf(buffer, sizeof(buffer), "%.*f %s", decimals, value,
+                unitSuffix(unit));
+  return buffer;
 }
 
 }  // namespace cadcore

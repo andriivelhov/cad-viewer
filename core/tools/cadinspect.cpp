@@ -143,6 +143,10 @@ int main(int argc, char** argv) {
     }
   }
 
+  for (int i = 2; i + 1 < argc; ++i)
+    if (std::string(argv[i]) == "--quality")
+      doc->retessellate(std::atof(argv[i + 1]));
+
   auto t2 = std::chrono::steady_clock::now();
   const auto& mesh = doc->renderMesh();
   auto t3 = std::chrono::steady_clock::now();

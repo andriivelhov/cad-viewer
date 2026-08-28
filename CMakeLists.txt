@@ -67,6 +67,29 @@ else()
   add_custom_target(shaders)
 endif()
 
+# A notarised bundle is write-protected by macOS - not just its signature, but
+# the executable itself, which even xattr cannot touch. The next plain build
+# then fails with "ld: can't write output file". Removing the bundle first is
+# the only reliable fix; a custom target is never up to date, so this always
+# runs and CMake rebuilds the bundle from scratch.
+# A notarised bundle is write-protected by macOS - the executable included,
+# which even xattr cannot touch - so the next plain build fails to link. Only
+# removing the whole bundle clears it, and only /bin/rm can (cmake -E rm
+# cannot). This project is macOS-only, so that is fine.
+# Clear the signed pieces but keep Info.plist and Resources: CMake writes the
+# plist at configure time and will not recreate it during a build, so deleting
+# the whole bundle silently produced an app with no Info.plist - which codesign
+# accepts locally and Apple's notary service rejects.
+add_custom_target(clean_app_bundle
+  COMMAND rm -rf ${CMAKE_CURRENT_BINARY_DIR}/CADViewer.app/Contents/MacOS
+                 ${CMAKE_CURRENT_BINARY_DIR}/CADViewer.app/Contents/Frameworks
+                 ${CMAKE_CURRENT_BINARY_DIR}/CADViewer.app/Contents/_CodeSignature
+                 ${CMAKE_CURRENT_BINARY_DIR}/CADViewer.app/Contents/CodeResources
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          ${CMAKE_CURRENT_BINARY_DIR}/CADViewer.app/Contents/MacOS
+  COMMENT "Clearing the previous signed binary"
+  VERBATIM)
+
 # Listing the metallib as a bundle resource makes it a real build dependency.
 # A POST_BUILD copy only runs when the target relinks, which silently ships a
 # stale shader library whenever only the .metal source changed.
@@ -77,7 +100,7 @@ set_source_files_properties(${METAL_SRC} PROPERTIES
 
 add_executable(CADViewer MACOSX_BUNDLE
   app/main.mm app/CADView.mm ${METAL_SRC} ${METAL_LIB})
-add_dependencies(CADViewer shaders)
+add_dependencies(CADViewer shaders clean_app_bundle)
 target_include_directories(CADViewer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app)
 target_link_libraries(CADViewer PRIVATE cadcore
   "-framework Cocoa" "-framework Metal" "-framework MetalKit"
@@ -86,13 +109,6 @@ target_link_libraries(CADViewer PRIVATE cadcore
 target_compile_options(CADViewer PRIVATE -fobjc-arc)
 target_link_options(CADViewer PRIVATE -Wl,-headerpad_max_install_names)
 
-# Once the bundle has been signed and stapled macOS write-protects it, and the
-# next plain build fails with "ld: can't write output file". Drop the signature
-# before linking; every path that needs one re-signs afterwards.
-add_custom_command(TARGET CADViewer PRE_BUILD
-  COMMAND ${CMAKE_COMMAND} -E rm -rf
-          $<TARGET_BUNDLE_CONTENT_DIR:CADViewer>/_CodeSignature
-  VERBATIM)
 # The icon is generated; regenerate with tools/make_icon.py.
 set(APP_ICON ${CMAKE_CURRENT_SOURCE_DIR}/packaging/AppIcon.icns)
 set_source_files_properties(${APP_ICON} PROPERTIES

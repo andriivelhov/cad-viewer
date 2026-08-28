@@ -1037,7 +1037,10 @@ typedef struct {
     }
   }
 
-  if (_cubePipeline && !_navigationOnly) {
+  // The cube belongs to the app window only. A QuickLook preview is for
+  // looking at the part, and a thumbnail is an image of the part - neither
+  // wants a UI widget baked into it.
+  if (_cubePipeline && !_headless && !_navigationOnly) {
     [enc setRenderPipelineState:_cubePipeline];
     [enc setDepthStencilState:_depthLess];
     [enc setCullMode:MTLCullModeNone];

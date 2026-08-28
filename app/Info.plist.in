@@ -152,6 +152,11 @@
 			<array>
 				<string>public.data</string>
 				<string>public.content</string>
+				<!-- Without public.3d-content Finder treats the file as a
+				     generic document and wraps its thumbnail in a white page
+				     with a badge instead of showing it full-bleed, which is
+				     how the system's own STL type behaves. -->
+				<string>public.3d-content</string>
 			</array>
 			<key>UTTypeTagSpecification</key>
 			<dict>
@@ -173,6 +178,11 @@
 			<array>
 				<string>public.data</string>
 				<string>public.content</string>
+				<!-- Without public.3d-content Finder treats the file as a
+				     generic document and wraps its thumbnail in a white page
+				     with a badge instead of showing it full-bleed, which is
+				     how the system's own STL type behaves. -->
+				<string>public.3d-content</string>
 			</array>
 			<key>UTTypeTagSpecification</key>
 			<dict>
@@ -194,6 +204,11 @@
 			<array>
 				<string>public.data</string>
 				<string>public.content</string>
+				<!-- Without public.3d-content Finder treats the file as a
+				     generic document and wraps its thumbnail in a white page
+				     with a badge instead of showing it full-bleed, which is
+				     how the system's own STL type behaves. -->
+				<string>public.3d-content</string>
 			</array>
 			<key>UTTypeTagSpecification</key>
 			<dict>
@@ -214,6 +229,11 @@
 			<array>
 				<string>public.data</string>
 				<string>public.content</string>
+				<!-- Without public.3d-content Finder treats the file as a
+				     generic document and wraps its thumbnail in a white page
+				     with a badge instead of showing it full-bleed, which is
+				     how the system's own STL type behaves. -->
+				<string>public.3d-content</string>
 			</array>
 			<key>UTTypeTagSpecification</key>
 			<dict>
@@ -234,6 +254,11 @@
 			<array>
 				<string>public.data</string>
 				<string>public.content</string>
+				<!-- Without public.3d-content Finder treats the file as a
+				     generic document and wraps its thumbnail in a white page
+				     with a badge instead of showing it full-bleed, which is
+				     how the system's own STL type behaves. -->
+				<string>public.3d-content</string>
 			</array>
 			<key>UTTypeTagSpecification</key>
 			<dict>

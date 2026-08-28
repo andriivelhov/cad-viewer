@@ -106,6 +106,13 @@ struct SnapCandidate {
 
 const char* toString(SnapKind kind);
 
+// Display units. Geometry is always millimetres internally; this only affects
+// how a measurement is written out.
+enum class Unit { Millimetres, Centimetres, Metres, Inches };
+double scaleFromMillimetres(Unit unit);
+const char* unitSuffix(Unit unit);
+std::string formatLength(double millimetres, Unit unit);
+
 // One end of a measurement. Either a topological entity or a bare point, so a
 // single code path covers face-to-face, edge-to-edge, point-to-point and every
 // mix of them.
@@ -190,7 +197,7 @@ class Document {
 
   // Triangulate. deflection <= 0 picks a value from the bounding box so the
   // tessellation is scale-appropriate instead of absolute.
-  bool tessellate(double deflection = -1, double angularDeg = 20.0);
+  bool tessellate(double deflection = -1, double angularDeg = -1);
   std::size_t triangleCount() const;
 
   // Chordal deviation used by the last tessellation, in mm.
@@ -198,6 +205,11 @@ class Document {
 
   // Builds (once) and returns the GPU buffers. Tessellates if needed.
   const RenderMesh& renderMesh(double deflection = -1);
+
+  // Throws the cached mesh away so the next renderMesh() re-tessellates. The
+  // multiplier scales the automatic chordal deviation: below 1 is finer and
+  // slower, above 1 is coarser and faster.
+  void retessellate(double deflectionMultiplier);
 
   // Exact query for a face picked out of the identity buffer.
   FaceInfo faceInfo(std::uint32_t faceId) const;

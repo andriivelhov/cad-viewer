@@ -385,6 +385,25 @@ for no benefit at this size. A face's label reads upright when its `up` vector
 points the way the viewer's up does when facing that side, which is +Y from
 above and -Y from below - getting that wrong renders TOP upside down.
 
+## Build traps worth remembering
+
+- **A notarised bundle is write-protected**, executable included, and even
+  `xattr` cannot touch it; the next plain build fails to link. `clean_app_bundle`
+  clears the signed parts first, and `cmake -E rm` cannot do it - only `/bin/rm`.
+- **Clear the signed parts, not the whole bundle.** CMake writes `Info.plist` at
+  *configure* time and will not recreate it during a build, so deleting the
+  bundle produced an app with no `Info.plist`. `codesign --verify --deep
+  --strict` still reported *valid on disk*; Apple's notary service rejected it
+  with "the signature of the binary is invalid", which is a misleading message
+  for a missing plist.
+- **`BRepMesh` leaves an existing triangulation alone**, so a new deflection is
+  silently ignored without `BRepTools::Clean` first. And chordal deviation alone
+  does not control facet count on curved faces - the angular limit dominates, so
+  a quality setting has to move both.
+- **Finder wraps a thumbnail in a white document page** unless the file's type
+  conforms to `public.3d-content`. The system's own STL type does; ours did not
+  until it was added to `UTTypeConformsTo`.
+
 ## Known rough edges
 
 - **A signed bundle blocks the next build.** Once the app has been signed and
