@@ -31,7 +31,7 @@ and give exact numbers.**
 - **Previews in Finder.** Spacebar gives an interactive model you can rotate,
   and files get real thumbnails instead of a generic icon.
 - **Behaves like a Mac app.** Multiple windows, ⌘W closes one and the app stays,
-  standard viewpoints, light and dark.
+  a view cube for orientation, light and dark.
 
 ## Measurement you can trust
 
@@ -88,6 +88,16 @@ Two QuickLook extensions ship inside the app:
 - **Preview** — press space and rotate the part in the preview pane
 
 ![Assembly](docs/assembly.png)
+
+## Orientation and looks
+
+A view cube in the corner shows which way the part is facing; click a face to
+snap to it. It shares the picking buffer with the model, so a click on the cube
+is resolved by the same pass that picks geometry.
+
+Five backgrounds, under **View ▸ Background**, remembered between launches.
+
+![Backgrounds](docs/backgrounds.png)
 
 ## Install
 

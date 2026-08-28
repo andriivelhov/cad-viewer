@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <memory>
 #include <vector>
+#include <vector>
 #include <simd/simd.h>
 
 // Used from inside a completion block before its definition appears below.
@@ -37,6 +38,11 @@ constexpr NSUInteger kSampleCount = 4;
 // Shared by the projection and the pan scale; they must agree or panning
 // cannot track the pointer.
 constexpr float kFovYDegrees = 35.0f;
+
+// The window uses a full-size content view, so this view extends under the
+// titlebar where AppKit owns the cursor for the traffic lights. Overriding it
+// there makes the cursor flicker as the pointer crosses the boundary.
+constexpr CGFloat kTitlebarBand = 32.0;
 
 // Faces and edges share the identity buffer; the top bit says which.
 bool isEdgeId(uint32_t entityId) {
@@ -73,6 +79,10 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   id<MTLRenderPipelineState> _shadedPipeline;
   id<MTLRenderPipelineState> _edgePipeline;
   id<MTLRenderPipelineState> _markerPipeline;
+  id<MTLRenderPipelineState> _cubePipeline;
+  id<MTLBuffer> _cubeBuffer;
+  id<MTLTexture> _cubeLabels;
+  id<MTLSamplerState> _cubeSampler;
   id<MTLRenderPipelineState> _pickResolvePipeline;
   id<MTLDepthStencilState> _depthAlways;
   id<MTLDepthStencilState> _depthLess;
@@ -143,6 +153,7 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   id<MTLRenderPipelineState> _measureLinePipeline;
 
   NSPoint _lastDrag;
+  NSPoint _lastMousePoint;
   BOOL _isDragging;
   BOOL _isPanning;
   BOOL _userNavigated;  // suppresses refit-on-resize once you take control
@@ -166,6 +177,8 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
     self.enableSetNeedsDisplay = YES;
     self.paused = YES;
     _hoverEntity = FACE_ID_NONE;
+    _backgroundStyle =
+        [NSUserDefaults.standardUserDefaults integerForKey:@"BackgroundStyle"];
     _azimuth = -0.9f;
     _elevation = 0.5f;
     _distance = 300.0f;
@@ -246,6 +259,11 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   _markerPipeline = [self.device
       newRenderPipelineStateWithDescriptor:base(@"vsMarker", @"fsMarker")
                                      error:&error];
+  _cubePipeline = [self.device
+      newRenderPipelineStateWithDescriptor:base(@"vsCube", @"fsCube")
+                                     error:&error];
+  [self buildViewCube];
+
   _measureLinePipeline = [self.device
       newRenderPipelineStateWithDescriptor:base(@"vsMeasureLine", @"fsMarker")
                                      error:&error];
@@ -289,6 +307,116 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
                                           options:MTLResourceStorageModeShared];
 }
 
+#pragma mark - View cube
+
+// Face order matches applyStandardView: 0 iso is not on the cube, so the six
+// faces map to named viewpoints directly.
+typedef struct {
+  simd_float3 normal;
+  simd_float3 right;
+  simd_float3 up;
+  int view;  // index into applyStandardView
+} CubeFace;
+
+- (void)buildViewCube {
+  static const CubeFace faces[6] = {
+      {{ 1, 0, 0}, { 0, 1, 0}, {0, 0, 1}, 4},  // +X  right
+      {{-1, 0, 0}, { 0,-1, 0}, {0, 0, 1}, 5},  // -X  left
+      {{ 0, 1, 0}, {-1, 0, 0}, {0, 0, 1}, 6},  // +Y  back
+      {{ 0,-1, 0}, { 1, 0, 0}, {0, 0, 1}, 1},  // -Y  front
+      // The label reads upright when `up` points the way the viewer's up does
+      // when facing that side, which is +Y from above and -Y from below.
+      {{ 0, 0, 1}, { 1, 0, 0}, {0, 1, 0}, 2},  // +Z  top
+      {{ 0, 0,-1}, { 1, 0, 0}, {0,-1, 0}, 7},  // -Z  bottom
+  };
+
+  struct CubeVertex {
+    float position[3];
+    float normal[3];
+    float uv[2];
+    uint32_t face;
+  };
+  std::vector<CubeVertex> vertices;
+  vertices.reserve(36);
+
+  // Labels are a 3x2 atlas; each face samples its own tile.
+  for (uint32_t f = 0; f < 6; ++f) {
+    const CubeFace &cf = faces[f];
+    const float u0 = (f % 3) / 3.0f, v0 = (f / 3) / 2.0f;
+    const float du = 1.0f / 3.0f, dv = 1.0f / 2.0f;
+    const simd_float2 corners[4] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    const simd_float2 uvs[4] = {{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+    CubeVertex quad[4];
+    for (int i = 0; i < 4; ++i) {
+      const simd_float3 p =
+          cf.normal + cf.right * corners[i].x + cf.up * corners[i].y;
+      quad[i] = {{p.x * 0.5f, p.y * 0.5f, p.z * 0.5f},
+                 {cf.normal.x, cf.normal.y, cf.normal.z},
+                 {u0 + uvs[i].x * du, v0 + uvs[i].y * dv},
+                 f};
+    }
+    for (int i : {0, 1, 2, 0, 2, 3}) vertices.push_back(quad[i]);
+  }
+
+  _cubeBuffer = [self.device newBufferWithBytes:vertices.data()
+                                         length:vertices.size() * sizeof(CubeVertex)
+                                        options:MTLResourceStorageModeShared];
+  _cubeLabels = [self buildCubeLabelAtlas];
+
+  MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+  sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+  sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+  _cubeSampler = [self.device newSamplerStateWithDescriptor:sd];
+}
+
+// Draws the six labels into one texture with CoreGraphics. Rendering text in
+// Metal would need a glyph atlas for no benefit at this size.
+- (id<MTLTexture>)buildCubeLabelAtlas {
+  const NSInteger tile = 128, cols = 3, rows = 2;
+  const NSInteger w = tile * cols, h = tile * rows;
+  NSArray<NSString *> *names = @[ @"RIGHT", @"LEFT", @"BACK",
+                                  @"FRONT", @"TOP", @"BOTTOM" ];
+
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, w * 4, cs,
+                                           kCGImageAlphaPremultipliedLast);
+  CGColorSpaceRelease(cs);
+  if (!ctx) return nil;
+
+  NSGraphicsContext *previous = NSGraphicsContext.currentContext;
+  NSGraphicsContext.currentContext =
+      [NSGraphicsContext graphicsContextWithCGContext:ctx flipped:NO];
+  for (NSInteger i = 0; i < 6; ++i) {
+    NSDictionary *attrs = @{
+      NSFontAttributeName : [NSFont systemFontOfSize:26 weight:NSFontWeightSemibold],
+      NSForegroundColorAttributeName : NSColor.whiteColor,
+    };
+    NSSize size = [names[i] sizeWithAttributes:attrs];
+    const NSInteger col = i % cols, row = i / cols;
+    [names[i] drawAtPoint:NSMakePoint(col * tile + (tile - size.width) / 2,
+                                      h - (row + 1) * tile + (tile - size.height) / 2)
+           withAttributes:attrs];
+  }
+  NSGraphicsContext.currentContext = previous;
+
+  MTLTextureDescriptor *td = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                   width:w height:h mipmapped:NO];
+  td.usage = MTLTextureUsageShaderRead;
+  id<MTLTexture> texture = [self.device newTextureWithDescriptor:td];
+  [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+             mipmapLevel:0
+               withBytes:CGBitmapContextGetData(ctx)
+             bytesPerRow:w * 4];
+  CGContextRelease(ctx);
+  return texture;
+}
+
++ (int)standardViewForCubeFace:(uint32_t)face {
+  static const int views[6] = {4, 5, 6, 1, 2, 7};
+  return face < 6 ? views[face] : 0;
+}
+
 #pragma mark - Toolbar
 
 // Floating controls straight on the viewport rather than a chrome bar, so the
@@ -311,11 +439,11 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   [_frameControl setToolTip:@"Fit the model to the window (F)"];
 
   _orientationControl = [NSSegmentedControl
-      segmentedControlWithLabels:@[ @"Iso", @"Front", @"Top", @"Right" ]
+      segmentedControlWithLabels:@[ @"Iso" ]
                     trackingMode:NSSegmentSwitchTrackingMomentary
                           target:self
                           action:@selector(orientationControlPressed:)];
-  [_orientationControl setToolTip:@"Standard viewpoints"];
+  [_orientationControl setToolTip:@"Isometric view — or click a face of the cube"];
 
   for (NSSegmentedControl *control in
        @[ _modeControl, _frameControl, _orientationControl ]) {
@@ -417,16 +545,26 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
 
 - (void)layoutToolbar {
   if (_headless || !_modeControl) return;
-  // Clear of the traffic lights, which sit in the top-left of the full-size
-  // content view.
-  const CGFloat left = 92, top = 14, gap = 10;
+
+  // Align to the real window buttons rather than guessing an inset: this puts
+  // the controls on the same baseline as the traffic lights and follows them
+  // if macOS ever moves them.
+  CGFloat left = 92, centreY = self.bounds.size.height - 26;
+  NSButton *zoom = [self.window standardWindowButton:NSWindowZoomButton];
+  if (zoom && zoom.superview) {
+    const NSRect z = [self convertRect:zoom.bounds fromView:zoom];
+    left = NSMaxX(z) + 18;
+    centreY = NSMidY(z);
+  }
+
+  const CGFloat gap = 10;
   CGFloat x = left;
   for (NSSegmentedControl *control in
        @[ _modeControl, _frameControl, _orientationControl ]) {
     [control sizeToFit];
     NSRect f = control.frame;
     f.origin.x = x;
-    f.origin.y = self.bounds.size.height - f.size.height - top;
+    f.origin.y = centreY - f.size.height * 0.5;
     control.frame = f;
     x += f.size.width + gap;
   }
@@ -451,24 +589,29 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
 - (void)frameControlPressed:(id)sender { [self frameModel]; }
 
 - (void)orientationControlPressed:(NSSegmentedControl *)sender {
-  [self applyStandardView:sender.selectedSegment];
+  [self applyStandardView:0];  // the cube covers the six named faces
 }
 
 // eye = target + d*(cos(el)cos(az), cos(el)sin(az), sin(el)), so each viewpoint
 // is just the azimuth/elevation that puts the eye on the wanted axis.
 - (void)applyStandardView:(NSInteger)index {
+  static const char *names[] = {"iso",  "front", "top",   "back",
+                                "right", "left",  "back",  "bottom"};
   switch (index) {
-    case 1: _azimuth = -float(M_PI_2); _elevation = 0.0f; break;    // Front, from -Y
-    case 2: _azimuth = -float(M_PI_2); _elevation = 1.55f; break;   // Top, from +Z
-    case 3: _azimuth = 0.0f; _elevation = 0.0f; break;              // Right, from +X
-    default: _azimuth = -0.9f; _elevation = 0.5f; break;            // Iso
+    case 1: _azimuth = -float(M_PI_2); _elevation = 0.0f; break;   // front, -Y
+    case 2: _azimuth = -float(M_PI_2); _elevation = 1.55f; break;  // top, +Z
+    case 3: _azimuth = 0.0f; _elevation = 0.0f; break;             // right, +X
+    case 4: _azimuth = 0.0f; _elevation = 0.0f; break;             // right, +X
+    case 5: _azimuth = float(M_PI); _elevation = 0.0f; break;      // left, -X
+    case 6: _azimuth = float(M_PI_2); _elevation = 0.0f; break;    // back, +Y
+    case 7: _azimuth = -float(M_PI_2); _elevation = -1.55f; break; // bottom, -Z
+    default: _azimuth = -0.9f; _elevation = 0.5f; break;           // iso
   }
   [self fitToCurrentOrientation];
   _userNavigated = NO;
   [self setNeedsDisplay:YES];
-  [self report:[NSString stringWithFormat:@"%@ view",
-                                          @[ @"iso", @"front", @"top",
-                                             @"right" ][std::clamp<NSInteger>(index, 0, 3)]]];
+  const NSInteger clamped = std::clamp<NSInteger>(index, 0, 7);
+  [self report:[NSString stringWithFormat:@"%s view", names[clamped]]];
 }
 
 // The pointer is over a control, not the model.
@@ -629,6 +772,57 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   if (self.statusHandler) self.statusHandler(text);
 }
 
+#pragma mark - Background
+
++ (NSArray<NSString *> *)backgroundNames {
+  return @[ @"Automatic", @"Studio Dark", @"Studio Light", @"Midnight",
+            @"Blueprint", @"Sunset" ];
+}
+
+- (void)setBackgroundStyle:(NSInteger)style {
+  _backgroundStyle = style;
+  [NSUserDefaults.standardUserDefaults setInteger:style forKey:@"BackgroundStyle"];
+  [self setNeedsDisplay:YES];
+}
+
+// Returns the gradient and the tone the model is shaded against. The part has
+// to stay readable on every one of these, so the base colour moves with the
+// ground rather than staying fixed.
+- (void)backgroundTop:(simd_float4 *)top
+               bottom:(simd_float4 *)bottom
+                model:(simd_float4 *)model {
+  NSInteger style = _backgroundStyle;
+  if (style == 0) style = [self isDarkMode] ? 1 : 2;
+
+  switch (style) {
+    case 2:  // Studio Light
+      *top = simd_make_float4(0.925f, 0.937f, 0.953f, 1);
+      *bottom = simd_make_float4(0.784f, 0.804f, 0.835f, 1);
+      *model = simd_make_float4(0.700f, 0.722f, 0.760f, 1);
+      break;
+    case 3:  // Midnight
+      *top = simd_make_float4(0.055f, 0.059f, 0.070f, 1);
+      *bottom = simd_make_float4(0.016f, 0.018f, 0.024f, 1);
+      *model = simd_make_float4(0.780f, 0.800f, 0.830f, 1);
+      break;
+    case 4:  // Blueprint
+      *top = simd_make_float4(0.055f, 0.180f, 0.400f, 1);
+      *bottom = simd_make_float4(0.020f, 0.078f, 0.200f, 1);
+      *model = simd_make_float4(0.870f, 0.910f, 0.980f, 1);
+      break;
+    case 5:  // Sunset
+      *top = simd_make_float4(0.980f, 0.560f, 0.520f, 1);
+      *bottom = simd_make_float4(0.420f, 0.240f, 0.520f, 1);
+      *model = simd_make_float4(0.930f, 0.900f, 0.900f, 1);
+      break;
+    default:  // Studio Dark
+      *top = simd_make_float4(0.180f, 0.196f, 0.223f, 1);
+      *bottom = simd_make_float4(0.094f, 0.102f, 0.118f, 1);
+      *model = simd_make_float4(0.780f, 0.800f, 0.830f, 1);
+      break;
+  }
+}
+
 #pragma mark - Appearance
 
 - (BOOL)isDarkMode {
@@ -637,6 +831,11 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
         NSAppearanceNameAqua, NSAppearanceNameDarkAqua
       ]];
   return [name isEqualToString:NSAppearanceNameDarkAqua];
+}
+
+- (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
+  [self layoutToolbar];  // the window buttons only exist once we have a window
 }
 
 - (void)viewDidChangeEffectiveAppearance {
@@ -679,18 +878,25 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   const CGSize ds = _renderSizeOverride.width > 0 ? _renderSizeOverride
                                                   : self.drawableSize;
   u.viewport = simd_make_float4(float(ds.width), float(ds.height), 1.1f, 4.5f);
+
+  // The cube shows the camera's orientation, so it takes the view matrix with
+  // translation dropped. Placed by pixels so it stays square at any aspect.
+  simd_float4x4 orientation = view;
+  orientation.columns[3] = simd_make_float4(0, 0, 0, 1);
+  u.cubeOrientation = orientation;
+  const float cubePixels = 78.0f * float(ds.height) / 950.0f;
+  const float marginPixels = 30.0f * float(ds.height) / 950.0f;
+  const float halfW = cubePixels / (float(ds.width) * 0.5f);
+  const float halfH = cubePixels / (float(ds.height) * 0.5f);
+  u.cubePlacement = simd_make_float4(
+      1.0f - (marginPixels + cubePixels) / (float(ds.width) * 0.5f),
+      1.0f - (marginPixels + cubePixels) / (float(ds.height) * 0.5f),
+      halfW, halfH);
   const simd_float3 light = simd_normalize(simd_make_float3(0.4f, -0.7f, 0.9f));
   u.lightDirection = simd_make_float4(light.x, light.y, light.z, 0.0f);
-  // Follow the system appearance rather than forcing one theme.
-  if ([self isDarkMode]) {
-    u.backgroundTop = simd_make_float4(0.180f, 0.196f, 0.223f, 1.0f);
-    u.backgroundBottom = simd_make_float4(0.094f, 0.102f, 0.118f, 1.0f);
-    u.baseColor = simd_make_float4(0.78f, 0.80f, 0.83f, 1.0f);
-  } else {
-    u.backgroundTop = simd_make_float4(0.925f, 0.937f, 0.953f, 1.0f);
-    u.backgroundBottom = simd_make_float4(0.784f, 0.804f, 0.835f, 1.0f);
-    u.baseColor = simd_make_float4(0.700f, 0.722f, 0.760f, 1.0f);
-  }
+  [self backgroundTop:&u.backgroundTop
+               bottom:&u.backgroundBottom
+                model:&u.baseColor];
   u.selectedEntityId = FACE_ID_NONE;  // selection is per-entity flags now
   u.hoverEntityId = _hoverEntity;
   _lastViewProjection = u.modelViewProjection;
@@ -829,6 +1035,19 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
               vertexStart:placedMarkers * 6
               vertexCount:6];
     }
+  }
+
+  if (_cubePipeline && !_navigationOnly) {
+    [enc setRenderPipelineState:_cubePipeline];
+    [enc setDepthStencilState:_depthLess];
+    [enc setCullMode:MTLCullModeNone];
+    [enc setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
+    [enc setVertexBuffer:_cubeBuffer offset:0 atIndex:0];
+    [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+    [enc setFragmentBytes:&u length:sizeof(u) atIndex:1];
+    [enc setFragmentTexture:_cubeLabels atIndex:0];
+    [enc setFragmentSamplerState:_cubeSampler atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:36];
   }
 }
 
@@ -1209,6 +1428,13 @@ destinationBytesPerImage:sizeof(float)];
 #pragma mark - Picking and measurement
 
 - (void)handlePickedFace:(uint32_t)entityId shift:(BOOL)shift {
+  // The cube shares the identity buffer with the model, so a click on it
+  // arrives here like any other pick.
+  if (entityId != FACE_ID_NONE && (entityId & CUBE_FACE_FLAG) != 0) {
+    [self applyStandardView:[CADView standardViewForCubeFace:
+                                entityId & ~CUBE_FACE_FLAG]];
+    return;
+  }
   if (!_doc) return;
 
   if (entityId == FACE_ID_NONE) {
@@ -1335,6 +1561,8 @@ destinationBytesPerImage:sizeof(float)];
 }
 
 - (NSString *)describeFace:(uint32_t)entityId {
+  if (entityId != FACE_ID_NONE && (entityId & CUBE_FACE_FLAG) != 0)
+    return @"view cube";
   if (!_doc || entityId == FACE_ID_NONE) return @"no selection";
   const uint32_t index = entityIndex(entityId);
 
@@ -1661,16 +1889,19 @@ static constexpr float kSnapRadiusPixels = 14.0f;
 }
 
 - (void)updateCursor {
-  // A preview pane keeps the system arrow: it is a place you look at a file,
-  // not a tool, and a grabbing hand there reads as the wrong affordance.
-  if (_navigationOnly) { [[NSCursor arrowCursor] set]; return; }
-  if (_isPanning) { [[NSCursor closedHandCursor] set]; return; }
-  if (_isDragging) { [[NSCursor closedHandCursor] set]; return; }
-  if (_mode == CADModeMeasure) { [[NSCursor crosshairCursor] set]; return; }
-  // Pointing hand over pickable geometry, open hand over empty space, so the
-  // cursor says whether a click will select something.
-  if (_hoverEntity != FACE_ID_NONE) { [[NSCursor pointingHandCursor] set]; return; }
-  [[NSCursor openHandCursor] set];
+  // Grabbing is the only state that earns a custom cursor. Showing an open
+  // hand just for hovering meant the cursor flickered every time the pointer
+  // passed the window controls, and it says nothing the model does not.
+  if (_isPanning || _isDragging) { [[NSCursor closedHandCursor] set]; return; }
+  if (_lastMousePoint.y > self.bounds.size.height - kTitlebarBand) {
+    [[NSCursor arrowCursor] set];
+    return;
+  }
+  if (!_navigationOnly && _mode == CADModeMeasure) {
+    [[NSCursor crosshairCursor] set];
+    return;
+  }
+  [[NSCursor arrowCursor] set];
 }
 
 - (void)cursorUpdate:(NSEvent *)event { [self updateCursor]; }
@@ -1706,6 +1937,7 @@ static constexpr float kSnapRadiusPixels = 14.0f;
 
 - (void)mouseMoved:(NSEvent *)event {
   const NSPoint where = [self convertPoint:event.locationInWindow fromView:nil];
+  _lastMousePoint = where;
   if ([self pointIsOverToolbar:where]) {
     [self setHoverEntity:FACE_ID_NONE];
     _cursorWorldValid = NO;
@@ -1756,7 +1988,8 @@ static constexpr float kSnapRadiusPixels = 14.0f;
 // visible before you commit to it.
 - (void)updateSnapPreviewForEntity:(uint32_t)entityId
                            atPixel:(simd_float2)pixel {
-  const BOOL wanted = (_mode == CADModeMeasure) && entityId != FACE_ID_NONE;
+  const BOOL wanted = (_mode == CADModeMeasure) && entityId != FACE_ID_NONE &&
+                      (entityId & CUBE_FACE_FLAG) == 0;
   if (!_doc) return;
   BOOL had = _hasSnapPreview;
   _hasSnapPreview = NO;
@@ -1820,6 +2053,7 @@ static constexpr float kSnapRadiusPixels = 14.0f;
 
 - (void)mouseDown:(NSEvent *)event {
   _lastDrag = [self convertPoint:event.locationInWindow fromView:nil];
+  _lastMousePoint = _lastDrag;
   _isDragging = NO;
   _isPanning = (event.modifierFlags &
                 (NSEventModifierFlagCommand | NSEventModifierFlagOption)) != 0;

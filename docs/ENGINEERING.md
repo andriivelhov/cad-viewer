@@ -371,8 +371,26 @@ Four separate things had to be right, and each failed silently:
 Registration is not immediate - allow ~10 s before concluding it failed.
 `packaging/verify_extension.sh` installs, registers and checks end to end.
 
+## View cube
+
+The cube reuses the identity buffer: its faces carry `CUBE_FACE_FLAG` in their
+ids, so the existing pick resolve returns them and the click handler maps a
+face to a viewpoint. No second picking path.
+
+It is drawn orthographically, positioned by pixel size so it stays square at
+any window aspect, with its depth squeezed into a sliver at the very front so
+it sits above the model while still self-occluding. Labels are drawn once into
+a 3x2 atlas with CoreGraphics; rendering text in Metal would need a glyph atlas
+for no benefit at this size. A face's label reads upright when its `up` vector
+points the way the viewer's up does when facing that side, which is +Y from
+above and -Y from below - getting that wrong renders TOP upside down.
+
 ## Known rough edges
 
+- **A signed bundle blocks the next build.** Once the app has been signed and
+  stapled, macOS write-protects it and a plain `cmake --build` fails with
+  `ld: can't write output file`. A PRE_BUILD step removes `_CodeSignature`
+  first; every path that needs a signature reapplies one.
 - **OCCT writes progress and warnings to stderr.** Still unfixed; the app needs
   a `Message_Printer` installed to silence it. Harmless in the GUI, noisy on the
   command line (`2>/dev/null` everywhere in this README is why).

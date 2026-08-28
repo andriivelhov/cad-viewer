@@ -282,6 +282,20 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
   [[viewMenu addItemWithTitle:@"Frame Model" action:@selector(frameModel:)
                 keyEquivalent:@"f"] setKeyEquivalentModifierMask:0];
   [viewMenu addItem:[NSMenuItem separatorItem]];
+  NSMenuItem *backgrounds = [viewMenu addItemWithTitle:@"Background"
+                                                action:nil
+                                         keyEquivalent:@""];
+  NSMenu *backgroundMenu = [[NSMenu alloc] initWithTitle:@"Background"];
+  NSArray<NSString *> *names = [CADView backgroundNames];
+  for (NSUInteger i = 0; i < names.count; ++i) {
+    NSMenuItem *item = [backgroundMenu addItemWithTitle:names[i]
+                                                 action:@selector(setBackground:)
+                                          keyEquivalent:@""];
+    item.tag = (NSInteger)i;
+  }
+  backgrounds.submenu = backgroundMenu;
+
+  [viewMenu addItem:[NSMenuItem separatorItem]];
   [viewMenu addItemWithTitle:@"Isometric" action:@selector(viewIso:)
                keyEquivalent:@"1"];
   [viewMenu addItemWithTitle:@"Front" action:@selector(viewFront:)
@@ -313,6 +327,10 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
 - (void)setOrbitMode:(id)sender { self.activeViewer.mode = CADModeOrbit; }
 - (void)setMeasureMode:(id)sender { self.activeViewer.mode = CADModeMeasure; }
 - (void)viewIso:(id)sender { [self.activeViewer applyStandardView:0]; }
+- (void)setBackground:(NSMenuItem *)item {
+  // Applies to every open window, so the app looks consistent.
+  for (ViewerWindowController *c in _windows) c.viewer.backgroundStyle = item.tag;
+}
 - (void)viewFront:(id)sender { [self.activeViewer applyStandardView:1]; }
 - (void)viewTop:(id)sender { [self.activeViewer applyStandardView:2]; }
 - (void)viewRight:(id)sender { [self.activeViewer applyStandardView:3]; }
@@ -323,6 +341,10 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
                                                         : NSControlStateValueOff;
   if (item.action == @selector(setMeasureMode:))
     item.state = self.activeViewer.mode == CADModeMeasure
+                     ? NSControlStateValueOn
+                     : NSControlStateValueOff;
+  if (item.action == @selector(setBackground:))
+    item.state = self.activeViewer.backgroundStyle == item.tag
                      ? NSControlStateValueOn
                      : NSControlStateValueOff;
   return YES;
@@ -382,6 +404,9 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
                                         : NSAppearanceNameDarkAqua];
   }
   if ([args containsObject:@"--transparent"]) view.transparentBackground = YES;
+  const NSUInteger bgIdx = [args indexOfObject:@"--background"];
+  if (bgIdx != NSNotFound && bgIdx + 1 < args.count)
+    view.backgroundStyle = args[bgIdx + 1].integerValue;
 
   const NSUInteger measIdx = [args indexOfObject:@"--measure"];
   if (measIdx != NSNotFound && measIdx + 4 < args.count) {

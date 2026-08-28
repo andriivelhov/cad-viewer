@@ -10,6 +10,9 @@
 #define ENTITY_INDEX_MASK 0x7FFFFFFFu
 // Edges are ~2 px wide, so a click needs a tolerance to be hittable at all.
 #define EDGE_PICK_RADIUS 5
+// View-cube faces live in their own id range so the existing identity buffer
+// and pick resolve handle them with no special casing.
+#define CUBE_FACE_FLAG 0x40000000u
 
 typedef struct {
   simd_float4x4 modelViewProjection;
@@ -17,6 +20,8 @@ typedef struct {
   simd_float4 baseColor;       // rgb used
   simd_float4 backgroundTop;
   simd_float4 backgroundBottom;
+  simd_float4x4 cubeOrientation;  // camera rotation only
+  simd_float4 cubePlacement;      // x,y = NDC centre; z,w = NDC half size
   simd_float4 markerColor;
   simd_float4 viewport;        // x,y = drawable px; z = edge half-width; w = marker half-size
   unsigned int selectedEntityId;

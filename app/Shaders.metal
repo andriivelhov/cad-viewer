@@ -2,6 +2,7 @@
 #include "ShaderTypes.h"
 
 #ifdef __RUNTIME_COMPILE__
+#define CUBE_FACE_FLAG 0x40000000u
 #define ENTITY_EDGE_FLAG 0x80000000u
 #define ENTITY_INDEX_MASK 0x7FFFFFFFu
 #define EDGE_PICK_RADIUS 5
@@ -11,6 +12,8 @@ typedef struct {
   float4 baseColor;
   float4 backgroundTop;
   float4 backgroundBottom;
+  float4x4 cubeOrientation;
+  float4 cubePlacement;
   float4 markerColor;
   float4 viewport;
   uint selectedEntityId;
@@ -295,5 +298,66 @@ vertex MarkerOut vsMeasureLine(uint vid [[vertex_id]],
 
   MarkerOut out;
   out.clipPosition = float4(base.xy + offset * base.w, base.z, base.w);
+  return out;
+}
+
+// --- view cube ---------------------------------------------------------------
+// A small orientation widget in the corner. It shares the identity buffer with
+// the model, so clicking a face is resolved by the same pick pass; the ids just
+// carry CUBE_FACE_FLAG.
+
+struct CubeVertex {
+  packed_float3 position;
+  packed_float3 normal;
+  packed_float2 uv;
+  uint face;
+};
+
+struct CubeOut {
+  float4 clipPosition [[position]];
+  float3 normal;
+  float2 uv;
+  uint face [[flat]];
+};
+
+vertex CubeOut vsCube(uint vid [[vertex_id]],
+                      const device CubeVertex* vertices [[buffer(0)]],
+                      constant Uniforms& u [[buffer(1)]]) {
+  const CubeVertex v = vertices[vid];
+  const float3 rotated =
+      (u.cubeOrientation * float4(float3(v.position), 0.0)).xyz;
+  const float3 normal =
+      (u.cubeOrientation * float4(float3(v.normal), 0.0)).xyz;
+
+  CubeOut out;
+  // Orthographic, placed by pixel size so the cube stays square whatever the
+  // window aspect. Depth is squeezed into a sliver at the very front so the
+  // cube sits above the model and still self-occludes correctly.
+  out.clipPosition = float4(u.cubePlacement.xy + rotated.xy * u.cubePlacement.zw,
+                            0.01 - rotated.z * 0.004, 1.0);
+  out.normal = normal;
+  out.uv = float2(v.uv);
+  out.face = v.face;
+  return out;
+}
+
+fragment FragmentOut fsCube(CubeOut in [[stage_in]],
+                            constant Uniforms& u [[buffer(1)]],
+                            texture2d<float> labels [[texture(0)]],
+                            sampler labelSampler [[sampler(0)]]) {
+  const uint id = in.face | CUBE_FACE_FLAG;
+  const float3 n = normalize(in.normal);
+  const float shade = 0.55 + 0.45 * saturate(n.z * 0.5 + 0.5);
+
+  float3 base = float3(0.82, 0.84, 0.88) * shade;
+  if (id == u.hoverEntityId) base = mix(base, float3(0.30, 0.66, 1.00), 0.55);
+
+  // The atlas holds white glyphs on transparent; composite them as ink.
+  const float ink = labels.sample(labelSampler, in.uv).a;
+  const float3 colour = mix(base, float3(0.12, 0.13, 0.16), ink);
+
+  FragmentOut out;
+  out.color = float4(colour, 1.0);
+  out.faceId = id;
   return out;
 }

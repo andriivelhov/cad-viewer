@@ -9,7 +9,8 @@ is composited from two sources the app can produce itself: the Metal scene via
 import os, subprocess, sys
 from PIL import Image, ImageDraw, ImageFilter
 
-APP = "/Applications/CADViewer.app/Contents/MacOS/CADViewer"
+# Use the build tree so the images always match the code being documented.
+APP = "build/CADViewer.app/Contents/MacOS/CADViewer"
 W, H = 2360, 1560           # the app window at 2x
 TITLEBAR = 56               # drawn, since the real one is system chrome
 RADIUS = 22

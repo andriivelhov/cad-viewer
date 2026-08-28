@@ -85,6 +85,14 @@ target_link_libraries(CADViewer PRIVATE cadcore
   "-framework ImageIO" "-framework CoreGraphics")
 target_compile_options(CADViewer PRIVATE -fobjc-arc)
 target_link_options(CADViewer PRIVATE -Wl,-headerpad_max_install_names)
+
+# Once the bundle has been signed and stapled macOS write-protects it, and the
+# next plain build fails with "ld: can't write output file". Drop the signature
+# before linking; every path that needs one re-signs afterwards.
+add_custom_command(TARGET CADViewer PRE_BUILD
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+          $<TARGET_BUNDLE_CONTENT_DIR:CADViewer>/_CodeSignature
+  VERBATIM)
 # The icon is generated; regenerate with tools/make_icon.py.
 set(APP_ICON ${CMAKE_CURRENT_SOURCE_DIR}/packaging/AppIcon.icns)
 set_source_files_properties(${APP_ICON} PROPERTIES

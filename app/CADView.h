@@ -14,6 +14,9 @@ typedef NS_ENUM(NSInteger, CADInteractionMode) {
 // Draws the model on transparency instead of the gradient, so QuickLook
 // composites it onto Finder's own background.
 @property(nonatomic) BOOL transparentBackground;
+// 0 follows the system appearance; 1+ are explicit looks. See backgroundNames.
+@property(nonatomic) NSInteger backgroundStyle;
++ (NSArray<NSString *> *)backgroundNames;
 - (instancetype)initHeadlessWithFrame:(CGRect)frame device:(id<MTLDevice>)device;
 - (BOOL)loadDocumentAtPath:(NSString *)path error:(NSString **)outError;
 - (void)frameModel;
