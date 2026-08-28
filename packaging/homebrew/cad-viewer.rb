@@ -7,7 +7,7 @@
 #   shasum -a 256 packaging/CADViewer-<version>.dmg
 cask "cad-viewer" do
   version "1.0"
-  sha256 "0965ad99fd904b004c370fd30a078a54e4ca7672a6046e1c8e8d4d600b979d42"
+  sha256 "eb78e1f400d78be6168e3d3abca48d9c88edcddb6880f869e176904f03d6cfcc"
 
   url "https://github.com/andriivelhov/cad-viewer/releases/download/v#{version}/CADViewer-#{version}.dmg"
   name "CAD Viewer"

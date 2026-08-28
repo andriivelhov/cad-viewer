@@ -338,25 +338,31 @@ Four separate things had to be right, and each failed silently:
    `app/quicklook/CADThumbnail.entitlements`. The app must also be notarised;
    Gatekeeper reporting `rejected: Unnotarized Developer ID` is enough to keep
    the extension out.
-4. **A `POST_BUILD` step only runs when its own target relinks.** Embedding the
+4. **A signed bundle is write-protected, and the failure is silent.** The embed
+   step copies the extensions into the app; run against an already-signed and
+   stapled bundle the copy fails and leaves an **empty** `.appex` behind, which
+   PlugInKit then rejects as an invalid plugin path. The target now removes
+   `_CodeSignature` before copying (it re-signs at the end anyway), and the
+   release script clears the whole bundle first.
+5. **A `POST_BUILD` step only runs when its own target relinks.** Embedding the
    extensions was a POST_BUILD on `CADViewer`, so editing only an extension
    source rebuilt the `.appex` and then shipped the *previous* one inside the
    app - silently, repeatedly. Embedding is now a custom *target*, which is
    never "up to date" and always runs. (The stale-metallib bug earlier was the
    same mistake in a different place.)
-5. **`replyWithContextSize:` is in points; the context is scaled.** Drawing
+6. **`replyWithContextSize:` is in points; the context is scaled.** Drawing
    into `CGRectMake(0, 0, points.width, points.height)` fills only the
    bottom-left quadrant of a Retina tile, because CoreGraphics' origin is
    bottom-left. Take the extent from `CGContextGetClipBoundingBox(context)`
    instead. This one hid for three rounds because the test harness requested
    `scale:1.0` while Finder uses 2 - a test that does not reproduce the real
    conditions is worse than no test, because it reads as a pass.
-6. **Thumbnails must be opaque.** A transparent thumbnail gets wrapped in
+7. **Thumbnails must be opaque.** A transparent thumbnail gets wrapped in
    Finder's white document-page frame, which insets and shrinks the model; an
    opaque one is drawn full-bleed. The drawing block paints its own ground
    rather than trusting the render to be opaque. The *preview* extension stays
    transparent, where it composites onto the pane.
-7. **`CGBitmapContextCreateImage` does not copy your buffer.** `renderImageOfSize:`
+8. **`CGBitmapContextCreateImage` does not copy your buffer.** `renderImageOfSize:`
    passed its own `NSMutableData`, so the returned `CGImage` referenced memory
    freed when the method returned. Writing a PNG immediately hid it; the
    QuickLook drawing block runs much later and crashed in `CGContextDrawImage`.

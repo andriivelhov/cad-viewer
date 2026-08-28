@@ -173,6 +173,11 @@ add_custom_command(TARGET CADPreview POST_BUILD
 # rebuilt the .appex and then silently shipped the previous one inside the app.
 # A custom target is never "up to date", so this always runs.
 add_custom_target(embed_extensions ALL
+  # A signed and stapled bundle is write-protected, so copying into PlugIns
+  # fails silently and leaves an empty .appex behind. Drop the signature first;
+  # it is reapplied at the end of this target anyway.
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+          $<TARGET_BUNDLE_CONTENT_DIR:CADViewer>/_CodeSignature
   COMMAND ${CMAKE_COMMAND} -E make_directory
           $<TARGET_BUNDLE_CONTENT_DIR:CADViewer>/PlugIns
   COMMAND ${CMAKE_COMMAND} -E rm -rf
