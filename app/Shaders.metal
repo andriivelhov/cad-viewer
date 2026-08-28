@@ -213,14 +213,19 @@ struct PickResolveOut {
   float depth [[color(1)]];
 };
 
-fragment PickResolveOut fsPickResolve(texture2d_ms<uint> identity [[texture(0)]],
-                                      depth2d_ms<float> depths [[texture(1)]],
-                                      constant uint2& coord [[buffer(0)]]) {
+// With anti-aliasing off there is no multisample texture to read: Metal rejects
+// a sampleCount of 1 on MTLTextureType2DMultisample, so the identity and depth
+// attachments become plain 2D textures and the shader needs a matching
+// signature. The body is shared as a template rather than duplicated - reads
+// are `read(coord, s)` in both cases, where the sample index is the mip level
+// for the non-multisample variant and `s` is always 0 there.
+template <typename IdentityTexture, typename DepthTexture>
+static PickResolveOut resolvePick(IdentityTexture identity, DepthTexture depths,
+                                  uint2 coord, uint samples) {
   PickResolveOut out;
   out.faceId = FACE_ID_NONE;
   out.depth = depths.read(coord, 0);
 
-  const uint samples = identity.get_num_samples();
   const int width = int(identity.get_width());
   const int height = int(identity.get_height());
 
@@ -260,6 +265,19 @@ fragment PickResolveOut fsPickResolve(texture2d_ms<uint> identity [[texture(0)]]
     }
   }
   return out;
+}
+
+fragment PickResolveOut fsPickResolve(texture2d_ms<uint> identity [[texture(0)]],
+                                      depth2d_ms<float> depths [[texture(1)]],
+                                      constant uint2& coord [[buffer(0)]]) {
+  return resolvePick(identity, depths, coord, identity.get_num_samples());
+}
+
+fragment PickResolveOut fsPickResolveSingle(
+    texture2d<uint> identity [[texture(0)]],
+    depth2d<float> depths [[texture(1)]],
+    constant uint2& coord [[buffer(0)]]) {
+  return resolvePick(identity, depths, coord, 1u);
 }
 
 // --- measurement point markers ----------------------------------------------

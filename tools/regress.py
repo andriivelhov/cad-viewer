@@ -120,6 +120,51 @@ for style in range(4):
     out, err, rc = run(sample("plate.step"), "--background", str(style), "--render", png)
     check(f"background {style} renders", rc == 0 and os.path.getsize(png) > 5000, True)
 
+print("\nAnti-aliasing: every level renders and picks, supported or not")
+# 8x is unsupported on Apple silicon and 99 is nonsense; both must fall back
+# rather than trip Metal's validation assertion, which takes the process down.
+for aa in (1, 2, 4, 8, 99):
+    defaults_set("AntialiasingSamples", aa)
+    png = os.path.join(scratch, f"regress_aa{aa}.png")
+    _, _, rc = run(sample("plate.step"), "--render", png)
+    edge, _, _ = run(sample("plate.step"), "--pick", "700", "620")
+    check(f"AA {aa} renders and picks",
+          (rc, os.path.getsize(png) > 5000, edge),
+          (0, True, "edge 5    line    length 100.0000 mm"))
+defaults_clear("AntialiasingSamples")
+
+print("\nChrome: overlay controls contrast with whatever background is behind")
+try:
+    from PIL import Image
+except ImportError:
+    print("  skip  (needs Pillow)")
+else:
+    # The background is chosen independently of the system theme, so the
+    # floating controls must take their contrast from the rendered ground. What
+    # matters is the direction: lighter chrome on a dark ground, darker chrome
+    # on a light one. Magnitude is not the test - the controls cover only part
+    # of the strip being averaged.
+    def mean_luma(image, box):
+        crop = image.convert("L").crop(box)
+        return sum(crop.getdata()) / (crop.width * crop.height)
+
+    for style in range(1, 6):
+        base = os.path.join(scratch, f"regress_ground{style}.png")
+        over = os.path.join(scratch, f"regress_chrome{style}.png")
+        run(sample("plate.step"), "--background", str(style), "--render", base)
+        run(sample("plate.step"), "--background", str(style), "--chromeshot", over)
+        ground = Image.open(base).convert("RGBA")
+        chrome = Image.open(over).convert("RGBA").resize(ground.size)
+        merged = Image.alpha_composite(ground, chrome)
+
+        box = (0, 0, 700, 90)  # the toolbar strip, top-left in both images
+        bare = mean_luma(ground, box)
+        with_chrome = mean_luma(merged, box)
+        ground_is_light = bare > 127
+        contrasts = (with_chrome < bare - 2) if ground_is_light else (with_chrome > bare + 2)
+        check(f"background {style} toolbar contrasts with its ground",
+              contrasts, True)
+
 print("\nChrome: the settings window and toolbar build without a window server")
 png = os.path.join(scratch, "regress_settings.png")
 out, _, rc = run(sample("plate.step"), "--settingsshot", png)

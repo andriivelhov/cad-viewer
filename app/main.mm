@@ -24,6 +24,7 @@
   __weak id<SettingsDelegate> _owner;
   NSPopUpButton *_units, *_background, *_shading, *_quality, *_antialiasing;
   NSButton *_viewCube, *_materials;
+  NSArray<NSNumber *> *_aaSamples;
 }
 
 - (instancetype)initWithOwner:(id<SettingsDelegate>)owner {
@@ -51,14 +52,18 @@
     _quality = [self popupWithTitles:[CADView qualityNames]
                             selected:viewer.tessellationQuality
                               action:@selector(qualityChanged:)];
-    NSInteger aaIndex = 2;
-    switch (viewer.antialiasingSamples) {
-      case 1: aaIndex = 0; break;
-      case 2: aaIndex = 1; break;
-      case 8: aaIndex = 3; break;
-      default: aaIndex = 2; break;
+    // Only offer levels this GPU can render. Listing 8x on hardware that tops
+    // out at 4x offers a setting that crashes the renderer when chosen.
+    _aaSamples = [viewer supportedAntialiasingSamples];
+    NSMutableArray<NSString *> *aaTitles = [NSMutableArray array];
+    NSInteger aaIndex = 0;
+    for (NSUInteger i = 0; i < _aaSamples.count; ++i) {
+      const NSInteger value = _aaSamples[i].integerValue;
+      [aaTitles addObject:value == 1 ? @"Off"
+                                     : [NSString stringWithFormat:@"%ld×", (long)value]];
+      if (value == viewer.antialiasingSamples) aaIndex = (NSInteger)i;
     }
-    _antialiasing = [self popupWithTitles:@[ @"Off", @"2×", @"4×", @"8×" ]
+    _antialiasing = [self popupWithTitles:aaTitles
                                  selected:aaIndex
                                    action:@selector(antialiasingChanged:)];
 
@@ -158,8 +163,9 @@
   [_owner applySettings:^(CADView *viewer) { viewer.tessellationQuality = v; }];
 }
 - (void)antialiasingChanged:(id)s {
-  static const NSInteger samples[] = {1, 2, 4, 8};
-  const NSInteger v = samples[std::clamp<NSInteger>(_antialiasing.indexOfSelectedItem, 0, 3)];
+  const NSInteger index = std::clamp<NSInteger>(
+      _antialiasing.indexOfSelectedItem, 0, (NSInteger)_aaSamples.count - 1);
+  const NSInteger v = _aaSamples[index].integerValue;
   [_owner applySettings:^(CADView *viewer) { viewer.antialiasingSamples = v; }];
 }
 - (void)viewCubeChanged:(id)s {
@@ -223,7 +229,17 @@
     _status.stringValue = @"open a file  (⌘O, or drag one in)";
 
     __weak NSTextField *weakStatus = _status;
+    __weak CADView *weakViewer = _viewer;
+    // The status line sits at the bottom of the gradient, which on some
+    // backgrounds is the dark end while the toolbar's end is light.
+    _viewer.appearanceHandler = ^{
+      weakStatus.textColor = [weakViewer groundIsDarkNearBottom]
+                                 ? [NSColor colorWithWhite:0.78 alpha:1.0]
+                                 : [NSColor colorWithWhite:0.28 alpha:1.0];
+    };
     _viewer.statusHandler = ^(NSString *text) { weakStatus.stringValue = text; };
+    // The view built its chrome before this handler existed, so run it once.
+    _viewer.appearanceHandler();
 
     [_viewer addSubview:_status];
     window.contentView = _viewer;

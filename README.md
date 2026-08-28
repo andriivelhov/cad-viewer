@@ -118,7 +118,7 @@ remembered.
 | **Background** | Automatic (follows the system theme) or a fixed scene. |
 | **Shading** | Shaded with edges, shaded, or wireframe with hidden lines removed. |
 | **Detail** | How finely curved faces are tessellated. Trades load time against smoothness; measurements are unaffected, because they come from the geometry rather than the mesh. |
-| **Anti-aliasing** | Off, 2×, 4× or 8× multisampling. |
+| **Anti-aliasing** | Off, or 2×/4×/8× multisampling — only the levels your GPU supports are offered. Apple silicon tops out at 4×. |
 
 ![Settings](docs/settings.png)
 

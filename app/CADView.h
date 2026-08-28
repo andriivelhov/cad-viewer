@@ -28,6 +28,19 @@ typedef NS_ENUM(NSInteger, CADInteractionMode) {
 @property(nonatomic) NSInteger shadingMode;          // 0 shaded+edges, 1 shaded, 2 wireframe
 @property(nonatomic) NSInteger tessellationQuality;  // 0 coarse, 1 normal, 2 fine
 @property(nonatomic) NSInteger antialiasingSamples;  // 1, 2, 4 or 8
+// True when the rendered ground at that end of the gradient is dark. The
+// background is chosen independently of the system theme, so overlay chrome has
+// to take its contrast from what is actually behind it.
+- (BOOL)groundIsDarkNearTop;
+- (BOOL)groundIsDarkNearBottom;
+// Called whenever the ground changes, so an owner can restyle chrome it added
+// to the view itself.
+@property(nonatomic, copy) void (^appearanceHandler)(void);
+
+// Sample counts this device can actually render, ascending. Apple silicon
+// commonly tops out at 4x, and requesting more is fatal rather than ignored.
+- (NSArray<NSNumber *> *)supportedAntialiasingSamples;
+
 + (NSArray<NSString *> *)unitNames;
 + (NSArray<NSString *> *)shadingNames;
 + (NSArray<NSString *> *)qualityNames;

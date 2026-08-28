@@ -440,7 +440,7 @@ only in the front window.
 | Background | `BackgroundStyle` | Automatic follows the system theme |
 | Shading | `ShadingMode` | 0 shaded with edges, 1 shaded, 2 wireframe |
 | Detail | `TessellationQuality` | deflection multipliers 3.0 / 1.0 / 0.35 |
-| Anti-aliasing | `AntialiasingSamples` | MSAA sample count, 1/2/4/8 |
+| Anti-aliasing | `AntialiasingSamples` | MSAA sample count, filtered by device support |
 
 Wireframe is hidden-line removal rather than a depth-test change: the surfaces
 are still drawn and still write depth, but the fragment shader paints them in
@@ -448,6 +448,23 @@ the background gradient, so edges behind a face are correctly occluded. Because
 the edges then sit on the background rather than on a lit surface, they pick
 their colour from the background's luminance - dark ink on a light ground,
 light ink on a dark one - or they vanish into it.
+
+Two traps live in the anti-aliasing setting. Metal rejects
+`MTLTextureType2DMultisample` with a sample count of 1, so **Off** cannot simply
+pass 1 through: every attachment in the pass becomes a plain 2D texture, the
+colour attachment drops its resolve target, and the pick-resolve shader needs a
+non-multisample signature (`texture2d` rather than `texture2d_ms`). The two
+variants share one templated body so they cannot drift. And **not every level
+exists on every GPU** - Apple silicon tops out at 4x, and asking for 8x trips a
+validation assertion that takes the process down rather than failing gracefully.
+The stored value is filtered through `supportsTextureSampleCount:` at launch as
+well as on change, or one bad setting would break every subsequent start.
+
+Overlay chrome takes its contrast from the *rendered ground*, not the system
+theme: the background is chosen independently, so a light scene under a dark
+system theme left white labels on a near-white ground. The toolbar reads the top
+of the gradient and the status line the bottom, because on Sunset those two ends
+disagree.
 
 The materials checkbox is present but disabled, with a tooltip saying why.
 Showing a control that silently does nothing is worse than showing one that

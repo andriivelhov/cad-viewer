@@ -180,9 +180,10 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
     self.clearColor = MTLClearColorMake(0, 0, 0, 0);
     NSInteger stored =
         [NSUserDefaults.standardUserDefaults integerForKey:@"AntialiasingSamples"];
-    _sampleCount = (stored == 1 || stored == 2 || stored == 4 || stored == 8)
-                       ? (NSUInteger)stored
-                       : kDefaultSampleCount;
+    if (stored != 1 && stored != 2 && stored != 4 && stored != 8)
+      stored = kDefaultSampleCount;
+    _sampleCount = [CADView supportedSampleCountAtMost:(NSUInteger)stored
+                                             forDevice:device];
     self.sampleCount = _sampleCount;
     self.enableSetNeedsDisplay = YES;
     self.paused = YES;
@@ -284,7 +285,9 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
 
   MTLRenderPipelineDescriptor *pickDesc = [MTLRenderPipelineDescriptor new];
   pickDesc.vertexFunction = [library newFunctionWithName:@"vsPickResolve"];
-  pickDesc.fragmentFunction = [library newFunctionWithName:@"fsPickResolve"];
+  pickDesc.fragmentFunction = [library
+      newFunctionWithName:_sampleCount > 1 ? @"fsPickResolve"
+                                           : @"fsPickResolveSingle"];
   pickDesc.colorAttachments[0].pixelFormat = MTLPixelFormatR32Uint;
   pickDesc.colorAttachments[1].pixelFormat = MTLPixelFormatR32Float;
   pickDesc.rasterSampleCount = 1;
@@ -466,6 +469,7 @@ typedef struct {
   }
   [self buildMeasureChip];
   [self layoutToolbar];
+  [self applyChromeAppearance];
 }
 
 // A floating chip above the measurement line. Native text stays crisp at any
@@ -493,7 +497,7 @@ typedef struct {
 
 - (void)applyChipAppearance {
   if (!_measureChip) return;
-  const BOOL dark = [self isDarkMode];
+  const BOOL dark = [self groundIsDarkNearTop];
   _measureChip.layer.backgroundColor =
       (dark ? [NSColor colorWithWhite:0.10 alpha:0.92]
             : [NSColor colorWithWhite:1.00 alpha:0.94]).CGColor;
@@ -849,8 +853,36 @@ typedef struct {
   [self setNeedsDisplay:YES];
 }
 
+// Not every GPU offers every level - Apple silicon tops out at 4x, and asking
+// for 8x there does not fail gracefully, it trips a Metal validation assertion
+// and takes the process with it. So the choice is always filtered through what
+// the device reports.
++ (NSArray<NSNumber *> *)supportedSampleCountsForDevice:(id<MTLDevice>)device {
+  NSMutableArray<NSNumber *> *out = [NSMutableArray array];
+  for (NSNumber *n in @[ @1, @2, @4, @8 ])
+    if ([device supportsTextureSampleCount:n.unsignedIntegerValue])
+      [out addObject:n];
+  return out;
+}
+
++ (NSUInteger)supportedSampleCountAtMost:(NSUInteger)wanted
+                               forDevice:(id<MTLDevice>)device {
+  NSUInteger best = 1;
+  for (NSNumber *n in [self supportedSampleCountsForDevice:device]) {
+    const NSUInteger value = n.unsignedIntegerValue;
+    if (value <= wanted && value > best) best = value;
+  }
+  return best;
+}
+
+- (NSArray<NSNumber *> *)supportedAntialiasingSamples {
+  return [CADView supportedSampleCountsForDevice:self.device];
+}
+
 - (void)setAntialiasingSamples:(NSInteger)samples {
   if (samples != 1 && samples != 2 && samples != 4 && samples != 8) samples = 4;
+  samples = (NSInteger)[CADView supportedSampleCountAtMost:(NSUInteger)samples
+                                                 forDevice:self.device];
   _antialiasingSamples = samples;
   [NSUserDefaults.standardUserDefaults setInteger:samples forKey:@"AntialiasingSamples"];
   if ((NSUInteger)samples == _sampleCount) return;
@@ -886,12 +918,14 @@ typedef struct {
 
 - (void)previewBackgroundStyle:(NSInteger)style {
   _backgroundStyle = style;
+  [self applyChromeAppearance];
   [self setNeedsDisplay:YES];
 }
 
 - (void)setBackgroundStyle:(NSInteger)style {
   _backgroundStyle = style;
   [NSUserDefaults.standardUserDefaults setInteger:style forKey:@"BackgroundStyle"];
+  [self applyChromeAppearance];
   [self setNeedsDisplay:YES];
 }
 
@@ -935,6 +969,39 @@ typedef struct {
 
 #pragma mark - Appearance
 
+// Rec. 601 luma of the gradient at one end. The toolbar sits against the top of
+// the gradient and the status line against the bottom, and on a background like
+// Sunset those two ends disagree, so they are asked separately.
+- (BOOL)groundIsDarkNearTop {
+  simd_float4 top, bottom, model;
+  [self backgroundTop:&top bottom:&bottom model:&model];
+  return (0.299f * top.x + 0.587f * top.y + 0.114f * top.z) < 0.5f;
+}
+
+- (BOOL)groundIsDarkNearBottom {
+  simd_float4 top, bottom, model;
+  [self backgroundTop:&top bottom:&bottom model:&model];
+  return (0.299f * bottom.x + 0.587f * bottom.y + 0.114f * bottom.z) < 0.5f;
+}
+
+// The floating controls draw a native bezel, which by default follows the
+// system theme. That is the wrong signal here: the background is a scene the
+// user picks independently, so a light scene under a dark system theme left
+// white labels on a near-white ground, invisible. Force the appearance that
+// contrasts with what is actually behind them.
+- (void)applyChromeAppearance {
+  NSAppearance *forTop = [NSAppearance
+      appearanceNamed:[self groundIsDarkNearTop] ? NSAppearanceNameDarkAqua
+                                                 : NSAppearanceNameAqua];
+  for (NSSegmentedControl *control in
+       @[ _modeControl ?: (id)NSNull.null, _frameControl ?: (id)NSNull.null,
+          _orientationControl ?: (id)NSNull.null ]) {
+    if ([control isKindOfClass:NSSegmentedControl.class]) control.appearance = forTop;
+  }
+  [self applyChipAppearance];
+  if (self.appearanceHandler) self.appearanceHandler();
+}
+
 - (BOOL)isDarkMode {
   NSAppearanceName name = [self.effectiveAppearance
       bestMatchFromAppearancesWithNames:@[
@@ -950,7 +1017,7 @@ typedef struct {
 
 - (void)viewDidChangeEffectiveAppearance {
   [super viewDidChangeEffectiveAppearance];
-  [self applyChipAppearance];
+  [self applyChromeAppearance];
   [self setNeedsDisplay:YES];
 }
 
@@ -1016,6 +1083,17 @@ typedef struct {
 
 #pragma mark - Drawing
 
+// Metal rejects MTLTextureType2DMultisample with a sampleCount of 1, so with
+// anti-aliasing off every attachment in the pass has to be a plain 2D texture.
+// One place decides it, because the colour, identity and depth attachments of a
+// pass must agree with each other and with the pipeline's rasterSampleCount.
+- (void)applySampleCountTo:(MTLTextureDescriptor *)d {
+  if (_sampleCount > 1) {
+    d.textureType = MTLTextureType2DMultisample;
+    d.sampleCount = _sampleCount;
+  }
+}
+
 - (void)ensureFaceIdTextureOfSize:(CGSize)size {
   if (_faceIdTexture && _faceIdTexture.width == (NSUInteger)size.width &&
       _faceIdTexture.height == (NSUInteger)size.height)
@@ -1025,8 +1103,7 @@ typedef struct {
                                    width:(NSUInteger)size.width
                                   height:(NSUInteger)size.height
                                mipmapped:NO];
-  d.textureType = MTLTextureType2DMultisample;
-  d.sampleCount = _sampleCount;
+  [self applySampleCountTo:d];
   d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   d.storageMode = MTLStorageModePrivate;
   _faceIdTexture = [self.device newTextureWithDescriptor:d];
@@ -1036,8 +1113,7 @@ typedef struct {
                                    width:(NSUInteger)size.width
                                   height:(NSUInteger)size.height
                                mipmapped:NO];
-  dz.textureType = MTLTextureType2DMultisample;
-  dz.sampleCount = _sampleCount;
+  [self applySampleCountTo:dz];
   dz.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   dz.storageMode = MTLStorageModePrivate;
   _depthTexture = [self.device newTextureWithDescriptor:dz];
@@ -1173,11 +1249,11 @@ typedef struct {
   MTLTextureDescriptor *msaa = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                    width:w height:h mipmapped:NO];
-  msaa.textureType = MTLTextureType2DMultisample;
-  msaa.sampleCount = _sampleCount;
+  [self applySampleCountTo:msaa];
   msaa.usage = MTLTextureUsageRenderTarget;
   msaa.storageMode = MTLStorageModePrivate;
-  id<MTLTexture> colorMS = [self.device newTextureWithDescriptor:msaa];
+  id<MTLTexture> colorMS =
+      _sampleCount > 1 ? [self.device newTextureWithDescriptor:msaa] : nil;
 
   MTLTextureDescriptor *cd = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -1189,11 +1265,14 @@ typedef struct {
   [self ensureFaceIdTextureOfSize:size];
 
   MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-  pass.colorAttachments[0].texture = colorMS;
-  pass.colorAttachments[0].resolveTexture = color;
+  // With one sample the pass draws straight into the readable texture; there is
+  // no separate multisample target to resolve out of.
+  pass.colorAttachments[0].texture = colorMS ?: color;
+  pass.colorAttachments[0].resolveTexture = colorMS ? color : nil;
   pass.colorAttachments[0].loadAction = MTLLoadActionClear;
   pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
-  pass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+  pass.colorAttachments[0].storeAction =
+      colorMS ? MTLStoreActionMultisampleResolve : MTLStoreActionStore;
   pass.colorAttachments[1].texture = _faceIdTexture;
   pass.colorAttachments[1].loadAction = MTLLoadActionClear;
   pass.colorAttachments[1].storeAction = MTLStoreActionStore;
@@ -1276,8 +1355,7 @@ typedef struct {
                                    width:(NSUInteger)size.width
                                   height:(NSUInteger)size.height
                                mipmapped:NO];
-  cd.textureType = MTLTextureType2DMultisample;
-  cd.sampleCount = _sampleCount;
+  [self applySampleCountTo:cd];
   cd.usage = MTLTextureUsageRenderTarget;
   cd.storageMode = MTLStorageModePrivate;
   id<MTLTexture> color = [self.device newTextureWithDescriptor:cd];
