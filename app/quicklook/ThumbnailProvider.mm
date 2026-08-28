@@ -38,11 +38,12 @@
                                              device:device];
     });
 
-    // Deliberately opaque: a transparent thumbnail gets wrapped in Finder's
-    // white document-page frame, which insets and shrinks the model, while an
-    // opaque one is drawn full-bleed. The preview extension stays transparent,
-    // where it composites onto the pane instead.
-    view.transparentBackground = NO;
+    // Transparent, matching how the system's own STL thumbnails look: the
+    // model floats on whatever background Finder is drawing. This only works
+    // because the exported types conform to public.3d-content - without that
+    // Finder treats the file as a generic document and wraps a transparent
+    // thumbnail in a white page.
+    view.transparentBackground = YES;
 
     NSString *error = nil;
     if (![view loadDocumentAtPath:request.fileURL.path error:&error]) {
@@ -74,10 +75,6 @@
                   CGRect box = CGContextGetClipBoundingBox(context);
                   if (CGRectIsEmpty(box) || CGRectIsInfinite(box))
                     box = CGRectMake(0, 0, points.width, points.height);
-                  // Paint the ground: a transparent thumbnail gets wrapped in
-                  // Finder's white document-page frame, which insets the model.
-                  CGContextSetRGBFillColor(context, 0.157, 0.169, 0.196, 1.0);
-                  CGContextFillRect(context, box);
                   CGContextDrawImage(context, box,
                                      (__bridge CGImageRef)retainedImage);
                   return YES;

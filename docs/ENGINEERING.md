@@ -402,7 +402,8 @@ above and -Y from below - getting that wrong renders TOP upside down.
   a quality setting has to move both.
 - **Finder wraps a thumbnail in a white document page** unless the file's type
   conforms to `public.3d-content`. The system's own STL type does; ours did not
-  until it was added to `UTTypeConformsTo`.
+  until it was added to `UTTypeConformsTo`. Once it does, a *transparent*
+  thumbnail is the right answer - the model floats on Finder's background.
 
 ## Known rough edges
 
