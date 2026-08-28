@@ -20,7 +20,7 @@ case "$IDENTITY" in
 esac
 VERSION=$(grep -o 'MACOSX_BUNDLE_SHORT_VERSION_STRING "[^"]*"' CMakeLists.txt \
           | head -1 | sed 's/.*"\(.*\)"/\1/')
-VERSION="${VERSION:-1.0}"
+VERSION="${VERSION:-1.1}"
 STAGE=$(mktemp -d)
 DMG="packaging/CADViewer-${VERSION}.dmg"
 

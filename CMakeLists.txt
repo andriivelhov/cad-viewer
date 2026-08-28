@@ -118,7 +118,7 @@ target_sources(CADViewer PRIVATE ${APP_ICON})
 set_target_properties(CADViewer PROPERTIES
   MACOSX_BUNDLE_BUNDLE_NAME "CAD Viewer"
   MACOSX_BUNDLE_GUI_IDENTIFIER "dev.cadviewer.app"
-  MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+  MACOSX_BUNDLE_SHORT_VERSION_STRING "1.1"
   MACOSX_BUNDLE_EXECUTABLE_NAME "CADViewer"
   MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/app/Info.plist.in)
 
@@ -142,7 +142,12 @@ target_compile_options(CADThumbnail PRIVATE -fobjc-arc)
 target_link_options(CADThumbnail PRIVATE -e _NSExtensionMain
   -Wl,-headerpad_max_install_names)
 
-add_custom_command(TARGET CADThumbnail POST_BUILD
+# Assembling is a custom TARGET rather than a POST_BUILD for the same reason the
+# embedding step is: POST_BUILD only fires when the executable relinks, so
+# editing only Info.plist left the previous plist inside the .appex and the
+# change appeared to have no effect.
+add_custom_target(assemble_thumbnail_appex ALL
+  DEPENDS CADThumbnail
   COMMAND ${CMAKE_COMMAND} -E make_directory ${APPEX_DIR}/Contents/MacOS
   COMMAND ${CMAKE_COMMAND} -E make_directory ${APPEX_DIR}/Contents/Resources
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:CADThumbnail>
@@ -158,6 +163,7 @@ add_custom_command(TARGET CADThumbnail POST_BUILD
           ${APPEX_DIR}/Contents/Resources/Shaders.metal
   COMMENT "Assembling CADThumbnail.appex"
   VERBATIM)
+add_dependencies(assemble_thumbnail_appex CADThumbnail)
 
 # --- QuickLook preview extension --------------------------------------------
 # The interactive one: a QLPreviewingController hosting the real viewer, so the
@@ -177,7 +183,8 @@ target_compile_options(CADPreview PRIVATE -fobjc-arc)
 target_link_options(CADPreview PRIVATE -e _NSExtensionMain
   -Wl,-headerpad_max_install_names)
 
-add_custom_command(TARGET CADPreview POST_BUILD
+add_custom_target(assemble_preview_appex ALL
+  DEPENDS CADPreview
   COMMAND ${CMAKE_COMMAND} -E make_directory ${PREVIEW_APPEX_DIR}/Contents/MacOS
   COMMAND ${CMAKE_COMMAND} -E make_directory ${PREVIEW_APPEX_DIR}/Contents/Resources
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:CADPreview>
@@ -191,12 +198,14 @@ add_custom_command(TARGET CADPreview POST_BUILD
           ${PREVIEW_APPEX_DIR}/Contents/Resources/Shaders.metal
   COMMENT "Assembling CADPreview.appex"
   VERBATIM)
+add_dependencies(assemble_preview_appex CADPreview)
 
 # Embedding must be a custom TARGET, not a POST_BUILD on CADViewer. POST_BUILD
 # only runs when its target relinks, so editing only an extension source
 # rebuilt the .appex and then silently shipped the previous one inside the app.
 # A custom target is never "up to date", so this always runs.
 add_custom_target(embed_extensions ALL
+  DEPENDS assemble_thumbnail_appex assemble_preview_appex
   # A signed and stapled bundle is write-protected, so copying into PlugIns
   # fails silently and leaves an empty .appex behind. Drop the signature first;
   # it is reapplied at the end of this target anyway.

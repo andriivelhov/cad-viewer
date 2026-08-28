@@ -30,7 +30,14 @@
     // A preview pane is for looking at the part: drag to rotate, scroll or
     // pinch to zoom. No selection, no hover, no measurement.
     _viewer.navigationOnly = YES;
-    _viewer.transparentBackground = YES;
+    // Painted, not transparent, so the preview looks like the app rather than
+    // like whatever Finder happens to put behind it. Finder draws a rounded
+    // frame around live preview content in its sidebar and there is no way to
+    // opt out of it from inside an extension - the system's own 3D preview is
+    // unframed there because Finder shows a flat thumbnail instead and saves
+    // the live view for the spacebar panel. Given the frame is unavoidable,
+    // filling it with the app's own background is the better of the two looks.
+    _viewer.transparentBackground = NO;
     [container addSubview:_viewer];
   }
 
