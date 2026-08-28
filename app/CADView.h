@@ -1,0 +1,48 @@
+#import <MetalKit/MetalKit.h>
+
+typedef NS_ENUM(NSInteger, CADInteractionMode) {
+  CADModeOrbit = 0,   // click inspects a face
+  CADModeMeasure = 1  // click any two things: point, edge or face
+};
+
+@interface CADView : MTKView
+@property(nonatomic) CADInteractionMode mode;
+// Navigation only: no picking, no hover highlight, no cursor changes. Used by
+// the QuickLook preview, where the pane is for looking at the part, not
+// working on it.
+@property(nonatomic) BOOL navigationOnly;
+// Draws the model on transparency instead of the gradient, so QuickLook
+// composites it onto Finder's own background.
+@property(nonatomic) BOOL transparentBackground;
+- (instancetype)initHeadlessWithFrame:(CGRect)frame device:(id<MTLDevice>)device;
+- (BOOL)loadDocumentAtPath:(NSString *)path error:(NSString **)outError;
+- (void)frameModel;
+// Renders one frame without a window. Used for verification now, and it is
+// the same path a QuickLook thumbnail extension will need.
+// Renders headlessly to an image. Used by the QuickLook thumbnail extension,
+// which has no window.
+- (CGImageRef)renderImageOfSize:(CGSize)size CF_RETURNS_RETAINED;
+- (BOOL)renderOffscreenToPNG:(NSString *)path
+                        size:(CGSize)size
+                       error:(NSString **)outError;
+// Renders and resolves one pick in the same command buffer. Exercises the
+// multisampled identity buffer without needing a window.
+- (uint32_t)pickFaceHeadlessAtX:(uint32_t)x y:(uint32_t)y size:(CGSize)size;
+// Human-readable summary of a face: type, area, and exact diameter if round.
+- (NSString *)describeFace:(uint32_t)faceId;
+// Drive selection/highlight from outside the view - used by the headless
+// render flags today and by the component sidebar next.
+- (void)selectFace:(uint32_t)faceId;
+- (void)highlightEntity:(uint32_t)faceId;
+- (void)applyStandardView:(NSInteger)index;  // 0 iso, 1 front, 2 top, 3 right
+- (void)fitToCurrentOrientationWithAspect:(float)aspect;
+- (NSString *)clipReport;
+- (NSString *)simulateMeasureFromX:(uint32_t)x1 y:(uint32_t)y1
+                               toX:(uint32_t)x2 y:(uint32_t)y2
+                              size:(CGSize)size;
+- (NSString *)pointMeasureFromX:(uint32_t)x1 y:(uint32_t)y1
+                            toX:(uint32_t)x2 y:(uint32_t)y2
+                           size:(CGSize)size;
+- (BOOL)captureChromeToPNG:(NSString *)path;
+@property(nonatomic, copy) void (^statusHandler)(NSString *);
+@end

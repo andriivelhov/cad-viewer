@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>CADThumbnail</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.cadviewer.app.thumbnail</string>
+	<key>CFBundleName</key>
+	<string>CAD Viewer Thumbnails</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>CAD Viewer Thumbnails</string>
+	<!-- PlugInKit will not register an extension without this. -->
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.quicklook.thumbnail</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>CADThumbnailProvider</string>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>QLSupportedContentTypes</key>
+			<array>
+					<string>dev.cadviewer.step</string>
+					<string>dev.cadviewer.iges</string>
+					<string>dev.cadviewer.brep</string>
+					<string>dev.cadviewer.gltf</string>
+					<string>dev.cadviewer.vrml</string>
+					<string>public.standard-tesselated-geometry-format</string>
+					<string>public.geometry-definition-format</string>
+					<string>org.khronos.glb</string>
+			</array>
+			<key>QLThumbnailMinimumDimension</key>
+			<integer>32</integer>
+		</dict>
+	</dict>
+</dict>
+</plist>

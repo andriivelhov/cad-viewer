@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- macOS refuses to register an app extension that is not sandboxed.
+	     This was the actual reason PlugInKit ignored the bundle: signature
+	     type and notarisation were both red herrings. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- QuickLook hands the extension a file URL; this is what lets it read. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+</dict>
+</plist>

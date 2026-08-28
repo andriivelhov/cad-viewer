@@ -1,0 +1,5 @@
+build/
+packaging/*.dmg
+packaging/*.iconset/
+packaging/AppIcon_preview.png
+.DS_Store
