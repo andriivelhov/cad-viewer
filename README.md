@@ -137,6 +137,11 @@ Or download the [latest release](../../releases/latest) and drag it to
 Applications. The app is Developer ID signed and notarized, so it opens without
 a Gatekeeper warning.
 
+Installing through Homebrew also registers the two Finder extensions, so
+thumbnails and previews work immediately. After a manual drag-to-Applications
+install they stay dormant until the app has been launched once — open it once
+and Finder catches up.
+
 ## Build from source
 
 ```sh

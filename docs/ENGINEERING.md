@@ -470,6 +470,29 @@ The materials checkbox is present but disabled, with a tooltip saying why.
 Showing a control that silently does nothing is worse than showing one that
 admits it is not implemented.
 
+## Installing
+
+The cask does two things after copying the app, and a fresh install looks broken
+without them - generic document icons for every STEP file:
+
+    lsregister -f "/Applications/CAD Viewer.app"        # publishes the file types
+    pluginkit -a ".../PlugIns/CADThumbnail.appex"       # registers the extensions
+    pluginkit -a ".../PlugIns/CADPreview.appex"
+
+App extensions are normally discovered when the containing app is first
+launched, which an installer cannot assume has happened. `lsregister -f` alone
+only sometimes nudges them into being discovered - measured at about a minute
+when it worked and not at all when it did not. `pluginkit -a` registers them
+directly and took about three seconds, every time.
+
+Watch for stale registrations while developing. A build tree copy of the app is
+a real bundle with the same identifier as the installed one, so it shows up as a
+second app and competes for type ownership; release staging under a temp
+directory leaves a record pointing at a path that is then deleted. Those
+phantoms are what made the app's own UTIs show as `inactive untrusted` in an
+`lsregister -dump`. The release script now unregisters its staged copy, and
+`lsregister -u <path>` clears one by hand.
+
 ## Known rough edges
 
 - **A signed bundle blocks the next build.** Once the app has been signed and

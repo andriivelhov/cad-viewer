@@ -70,6 +70,13 @@ if [ -n "$NOTARIZE_PROFILE" ]; then
 fi
 ln -s /Applications "$STAGE/Applications"
 
+# Staging under a temp dir leaves a LaunchServices record pointing at a path
+# that is about to be deleted. Those phantoms accumulate and compete with the
+# real app for type ownership, which showed up as the app's own UTIs being
+# marked inactive and untrusted.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -u "$STAGE/CAD Viewer.app" 2>/dev/null || true
+
 echo "==> creating $DMG"
 rm -f "$DMG"
 hdiutil create -volname "CAD Viewer" -srcfolder "$STAGE" \
