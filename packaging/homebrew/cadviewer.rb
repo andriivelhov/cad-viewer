@@ -10,8 +10,8 @@
 # Update `version` and `sha256` for each release; get the checksum with
 #   shasum -a 256 packaging/CADViewer-<version>.dmg
 cask "cadviewer" do
-  version "1.1"
-  sha256 "7b93af8078d4c1b48b6a8b0570f5a6b6b0c7bac6371b1e87d99ccbda615f88fe"
+  version "1.2"
+  sha256 "c6056b7b677c2291b5c1400749a580f7524dd2945f3c7a4c0ff0c8d62091b752"
 
   url "https://github.com/andriivelhov/cad-viewer/releases/download/v#{version}/CADViewer-#{version}.dmg"
   name "CAD Viewer"
