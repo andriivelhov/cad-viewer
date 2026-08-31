@@ -666,6 +666,26 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
     [self exitHeadless:0];
   }
 
+  // Dragging the window by its titlebar used to orbit the model too, because
+  // a full-size-content window puts the view under the titlebar. Needs a real
+  // window: without one there is no titlebar band to be inside of.
+  if ([args containsObject:@"--dragtest"]) {
+    CADView *v = self.activeViewer;
+    const CGFloat h = v.bounds.size.height, w = v.bounds.size.width;
+    const CGFloat band = [v titlebarBandHeight];
+
+    NSString *before = [v cameraReport];
+    [v simulateDragFromX:w * 0.5 y:h - 8 toX:w * 0.5 + 120 y:h - 8];
+    NSString *afterBand = [v cameraReport];
+    [v simulateDragFromX:w * 0.5 y:h * 0.5 toX:w * 0.5 + 120 y:h * 0.5];
+    NSString *afterBody = [v cameraReport];
+
+    printf("band %.0f\ntitlebar drag %s\nbody drag %s\n", band,
+           [afterBand isEqualToString:before] ? "ignored" : "MOVED THE MODEL",
+           [afterBody isEqualToString:afterBand] ? "IGNORED" : "orbits");
+    [self exitHeadless:0];
+  }
+
   const NSUInteger chromeIdx = [args indexOfObject:@"--chromeshot"];
   if (chromeIdx != NSNotFound && chromeIdx + 1 < args.count) {
     const BOOL ok = [view captureChromeToPNG:args[chromeIdx + 1]];

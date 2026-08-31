@@ -160,6 +160,7 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   NSPoint _lastDrag;
   NSPoint _lastMousePoint;
   BOOL _isDragging;
+  BOOL _dragOwnedByWindow;
   BOOL _isPanning;
   BOOL _userNavigated;  // suppresses refit-on-resize once you take control
 }
@@ -2089,7 +2090,7 @@ static constexpr float kSnapRadiusPixels = 14.0f;
   // hand just for hovering meant the cursor flickered every time the pointer
   // passed the window controls, and it says nothing the model does not.
   if (_isPanning || _isDragging) { [[NSCursor closedHandCursor] set]; return; }
-  if (_lastMousePoint.y > self.bounds.size.height - kTitlebarBand) {
+  if ([self pointIsInTitlebarBand:_lastMousePoint]) {
     [[NSCursor arrowCursor] set];
     return;
   }
@@ -2247,26 +2248,36 @@ static constexpr float kSnapRadiusPixels = 14.0f;
   return YES;
 }
 
-- (void)mouseDown:(NSEvent *)event {
-  _lastDrag = [self convertPoint:event.locationInWindow fromView:nil];
-  _lastMousePoint = _lastDrag;
+// Height of the strip at the top that belongs to the window, not the model.
+// With NSWindowStyleMaskFullSizeContentView the content view runs under the
+// titlebar, so a drag there both moves the window and reached the camera - the
+// model span around while the window was being repositioned. Zero anywhere
+// there is no titlebar over the content, so the QuickLook preview stays
+// rotatable to its top edge.
+- (CGFloat)titlebarBandHeight {
+  NSWindow *window = self.window;
+  if (_headless || !window) return 0;
+  if (!(window.styleMask & NSWindowStyleMaskFullSizeContentView)) return 0;
+  return kTitlebarBand;
+}
+
+- (BOOL)pointIsInTitlebarBand:(NSPoint)p {
+  return p.y > self.bounds.size.height - [self titlebarBandHeight];
+}
+
+- (void)beginDragAtPoint:(NSPoint)p panning:(BOOL)panning {
+  _lastDrag = p;
+  _lastMousePoint = p;
   _isDragging = NO;
-  _isPanning = (event.modifierFlags &
-                (NSEventModifierFlagCommand | NSEventModifierFlagOption)) != 0;
+  // Latched at mouse-down: once the window has taken the drag, the pointer
+  // moving down into the model must not start orbiting mid-gesture.
+  _dragOwnedByWindow = [self pointIsInTitlebarBand:p];
+  _isPanning = panning && !_dragOwnedByWindow;
   [self updateCursor];
 }
 
-- (void)mouseUp:(NSEvent *)event {
-  const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-  const BOOL wasClick = !_isDragging;
-  _isDragging = _isPanning = NO;
-  [self updateCursor];
-  if (wasClick && !_navigationOnly)
-    [self requestPickAt:p shift:(event.modifierFlags & NSEventModifierFlagShift) != 0];
-}
-
-- (void)mouseDragged:(NSEvent *)event {
-  const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+- (void)continueDragToPoint:(NSPoint)p panning:(BOOL)panning {
+  if (_dragOwnedByWindow) return;
   const CGFloat dx = p.x - _lastDrag.x, dy = p.y - _lastDrag.y;
   _lastDrag = p;
   if (std::abs(dx) > 0 || std::abs(dy) > 0) {
@@ -2275,7 +2286,7 @@ static constexpr float kSnapRadiusPixels = 14.0f;
     [self updateCursor];
   }
 
-  if (event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagOption)) {
+  if (panning) {
     [self panByDX:dx dy:dy];
   } else {
     _azimuth -= float(dx) * 0.01f;
@@ -2283,6 +2294,40 @@ static constexpr float kSnapRadiusPixels = 14.0f;
     _elevation = std::clamp(_elevation - float(dy) * 0.01f, -1.55f, 1.55f);
   }
   [self setNeedsDisplay:YES];
+}
+
+// Drives the same path as a real drag, so the titlebar band can be tested
+// without a window server.
+- (void)simulateDragFromX:(CGFloat)x1 y:(CGFloat)y1 toX:(CGFloat)x2 y:(CGFloat)y2 {
+  [self beginDragAtPoint:NSMakePoint(x1, y1) panning:NO];
+  [self continueDragToPoint:NSMakePoint(x2, y2) panning:NO];
+}
+
+- (NSString *)cameraReport {
+  return [NSString stringWithFormat:@"azimuth %.4f elevation %.4f", _azimuth,
+                                    _elevation];
+}
+
+- (void)mouseDown:(NSEvent *)event {
+  [self beginDragAtPoint:[self convertPoint:event.locationInWindow fromView:nil]
+                 panning:(event.modifierFlags & (NSEventModifierFlagCommand |
+                                                 NSEventModifierFlagOption)) != 0];
+}
+
+- (void)mouseUp:(NSEvent *)event {
+  const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+  const BOOL wasClick = !_isDragging && !_dragOwnedByWindow;
+  _isDragging = _isPanning = _dragOwnedByWindow = NO;
+  [self updateCursor];
+  if (wasClick && !_navigationOnly)
+    [self requestPickAt:p shift:(event.modifierFlags & NSEventModifierFlagShift) != 0];
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+  [self continueDragToPoint:[self convertPoint:event.locationInWindow fromView:nil]
+                    panning:(event.modifierFlags &
+                             (NSEventModifierFlagCommand |
+                              NSEventModifierFlagOption)) != 0];
 }
 
 - (void)rightMouseDragged:(NSEvent *)event {

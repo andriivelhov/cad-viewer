@@ -493,6 +493,24 @@ phantoms are what made the app's own UTIs show as `inactive untrusted` in an
 `lsregister -dump`. The release script now unregisters its staged copy, and
 `lsregister -u <path>` clears one by hand.
 
+## The titlebar band
+
+`NSWindowStyleMaskFullSizeContentView` runs the content view under the titlebar,
+which is what makes the window full-bleed - and it means a drag in the top strip
+reaches the viewer as well as the window. Dragging the window by its titlebar
+orbited the model at the same time.
+
+`titlebarBandHeight` is 32 for a window with a full-size content view and 0
+otherwise, so the QuickLook preview - which fills its pane with no titlebar -
+stays rotatable to its top edge. Ownership is latched at mouse-down: once the
+window has the drag, moving the pointer down into the model must not start
+orbiting mid-gesture. The toolbar controls live inside that strip but are
+subviews with their own event handling, so they are unaffected.
+
+`--dragtest` drives the real drag path through an actual window and reports
+whether each strip moved the camera; `titlebarBandHeight` returning 0 makes it
+fail, which is how it was checked.
+
 ## Known rough edges
 
 - **A signed bundle blocks the next build.** Once the app has been signed and

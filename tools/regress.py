@@ -165,6 +165,15 @@ else:
         check(f"background {style} toolbar contrasts with its ground",
               contrasts, True)
 
+print("\nWindow drag: the titlebar strip belongs to the window, not the camera")
+# A full-size-content window puts the view under the titlebar, so dragging the
+# window used to orbit the model at the same time.
+out, _, rc = run(sample("plate.step"), "--dragtest")
+lines = dict(l.split(" ", 1) for l in out.splitlines() if " " in l)
+check("titlebar band is present", out.splitlines()[0], "band 32")
+check("dragging the titlebar leaves the camera alone", lines.get("titlebar"), "drag ignored")
+check("dragging the model still orbits", lines.get("body"), "drag orbits")
+
 print("\nChrome: the settings window and toolbar build without a window server")
 png = os.path.join(scratch, "regress_settings.png")
 out, _, rc = run(sample("plate.step"), "--settingsshot", png)
