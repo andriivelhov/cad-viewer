@@ -11,7 +11,7 @@ set -euo pipefail
 
 IDENTITY="${IDENTITY:-Developer ID Application: Andrii Velhov (RGKP6D55BR)}"
 PROFILE="${PROFILE:-cadviewer}"
-VERSION="${VERSION:-$(sed -n 's/^ *version "\(.*\)"/\1/p' packaging/homebrew/cadviewer.rb)}"
+VERSION="${VERSION:-$(sed -n 's/.*MACOSX_BUNDLE_SHORT_VERSION_STRING "\(.*\)".*/\1/p' CMakeLists.txt)}"
 TAG="v${VERSION}"
 DMG="packaging/CADViewer-${VERSION}.dmg"
 TAP_REPO="andriivelhov/homebrew-tap"
