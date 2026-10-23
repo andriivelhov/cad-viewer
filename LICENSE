@@ -22,6 +22,7 @@ SOFTWARE.
 
 ---
 
-This software uses Open CASCADE Technology, licensed under LGPL-2.1 with an
-additional exception permitting use in proprietary applications. See
-https://dev.opencascade.org/resources/licensing
+This program links Open CASCADE Technology, which is licensed under the GNU
+Lesser General Public License version 2.1, with an additional exception
+permitting use in proprietary applications. Its licence text ships inside the
+application bundle at Contents/Resources.
