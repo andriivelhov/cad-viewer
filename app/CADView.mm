@@ -165,6 +165,7 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   NSPoint _lastMousePoint;
   BOOL _isDragging;
   BOOL _dragOwnedByWindow;
+  float _inspectionZoom;  // 1 unless --zoom asked for a close-up
   BOOL _isPanning;
   BOOL _userNavigated;  // suppresses refit-on-resize once you take control
 }
@@ -193,6 +194,7 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
     self.enableSetNeedsDisplay = YES;
     self.paused = YES;
     _hoverEntity = FACE_ID_NONE;
+    _inspectionZoom = 1.0f;
     _backgroundStyle =
         [NSUserDefaults.standardUserDefaults integerForKey:@"BackgroundStyle"];
     [self applyStoredSettings];
@@ -807,6 +809,9 @@ typedef struct {
   constexpr float kFitMargin = 1.08f;
   _distance = std::max(halfHeight / tanY, halfWidth / tanX) * kFitMargin +
               halfDepth;
+  // Applied here rather than at the call site: an offscreen render re-frames
+  // the model, which would otherwise throw away a zoom set beforehand.
+  _distance /= std::max(_inspectionZoom, 1e-3f);
   _distance = std::max(_distance, 1e-4f);
 }
 
@@ -2330,6 +2335,15 @@ static constexpr float kSnapRadiusPixels = 14.0f;
 - (void)simulateDragFromX:(CGFloat)x1 y:(CGFloat)y1 toX:(CGFloat)x2 y:(CGFloat)y2 {
   [self beginDragAtPoint:NSMakePoint(x1, y1) panning:NO];
   [self continueDragToPoint:NSMakePoint(x2, y2) panning:NO];
+}
+
+// Pulls the camera in after framing, so a headless render can inspect the
+// surface at the scale someone actually looks at it. Shading faults that are
+// invisible on a whole-part view are obvious here.
+- (void)zoomBy:(float)factor {
+  if (factor > 0) _inspectionZoom = factor;
+  _distance /= std::max(factor, 1e-3f);
+  [self setNeedsDisplay:YES];
 }
 
 - (NSString *)meshReport {

@@ -72,6 +72,7 @@ typedef NS_ENUM(NSInteger, CADInteractionMode) {
 - (NSString *)cameraReport;
 // Format, face count, triangle count and the chordal deflection actually used.
 - (NSString *)meshReport;
+- (void)zoomBy:(float)factor;
 - (CGFloat)titlebarBandHeight;
 - (NSString *)simulateMeasureFromX:(uint32_t)x1 y:(uint32_t)y1
                                toX:(uint32_t)x2 y:(uint32_t)y2

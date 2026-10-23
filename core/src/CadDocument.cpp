@@ -493,6 +493,22 @@ const RenderMesh& Document::renderMesh(double deflection) {
       // A B-rep face is smooth by construction and gets its own vertex range,
       // so averaging shared vertices within it gives smooth curvature while
       // edges between faces stay hard.
+      //
+      // Averaging is the fallback, though. Where the face carries UV nodes the
+      // normal is taken from the surface itself: an averaged normal depends on
+      // the triangulation around each vertex, and BRepMesh's layout on a swept
+      // or helical face is irregular enough that the averages wander. The
+      // result is a tube that shades as if it were dented, even though the
+      // positions are fine. The analytic normal has no such dependency.
+      TopLoc_Location surfaceLoc;
+      Handle(Geom_Surface) surface = BRep_Tool::Surface(face, surfaceLoc);
+      const bool exactNormals = tri->HasUVNodes() && !surface.IsNull();
+      // Which vertices the surface actually answered for; the rest fall back to
+      // averaging. Tracked explicitly because the averaging pass writes into
+      // the normals it would otherwise be testing.
+      std::vector<bool> fromSurface(
+          static_cast<std::size_t>(tri->NbNodes()) + 1, false);
+
       for (Standard_Integer i = 1; i <= tri->NbNodes(); ++i) {
         gp_Pnt p = tri->Node(i);
         p.Transform(trsf);
@@ -501,6 +517,24 @@ const RenderMesh& Document::renderMesh(double deflection) {
         v.position[1] = static_cast<float>(p.Y());
         v.position[2] = static_cast<float>(p.Z());
         v.faceId = faceId;
+        if (exactNormals) {
+          const gp_Pnt2d uv = tri->UVNode(i);
+          gp_Pnt at;
+          gp_Vec du, dv;
+          surface->D1(uv.X(), uv.Y(), at, du, dv);
+          gp_Vec n = du.Crossed(dv);
+          // Zero at a pole (a sphere's apex, a cone's tip): leave it for the
+          // averaging pass below, which still produces something usable there.
+          if (n.Magnitude() > gp::Resolution()) {
+            n.Normalize();
+            if (reversed) n.Reverse();
+            n.Transform(trsf);
+            v.normal[0] = static_cast<float>(n.X());
+            v.normal[1] = static_cast<float>(n.Y());
+            v.normal[2] = static_cast<float>(n.Z());
+            fromSurface[static_cast<std::size_t>(i)] = true;
+          }
+        }
         out.vertices.push_back(v);
       }
       for (Standard_Integer i = 1; i <= tri->NbTriangles(); ++i) {
@@ -511,6 +545,7 @@ const RenderMesh& Document::renderMesh(double deflection) {
         out.indices.push_back(baseVertex + b - 1);
         out.indices.push_back(baseVertex + c - 1);
       }
+      // Accumulate triangle normals for whatever the surface did not supply.
       for (std::size_t i = firstIndex; i + 2 < out.indices.size(); i += 3) {
         RenderVertex& v0 = out.vertices[out.indices[i]];
         RenderVertex& v1 = out.vertices[out.indices[i + 1]];
@@ -526,13 +561,17 @@ const RenderMesh& Document::renderMesh(double deflection) {
         const float nz = ux * wy - uy * wx;
         const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
         const float s = len > 0 ? 1.0f / len : 0.0f;
-        for (RenderVertex* v : {&v0, &v1, &v2}) {
-          v->normal[0] += nx * s;
-          v->normal[1] += ny * s;
-          v->normal[2] += nz * s;
+        for (std::size_t k = 0; k < 3; ++k) {
+          const std::uint32_t index = out.indices[i + k];
+          if (fromSurface[index - baseVertex + 1]) continue;
+          RenderVertex& v = out.vertices[index];
+          v.normal[0] += nx * s;
+          v.normal[1] += ny * s;
+          v.normal[2] += nz * s;
         }
       }
       for (std::size_t i = baseVertex; i < out.vertices.size(); ++i) {
+        if (fromSurface[i - baseVertex + 1]) continue;  // already unit length
         RenderVertex& v = out.vertices[i];
         const float l = std::sqrt(v.normal[0] * v.normal[0] +
                                   v.normal[1] * v.normal[1] +

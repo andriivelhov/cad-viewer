@@ -738,6 +738,10 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
   if (hovIdx != NSNotFound && hovIdx + 1 < args.count)
     [view highlightEntity:(uint32_t)args[hovIdx + 1].longLongValue];
 
+  const NSUInteger zoomIdx = [args indexOfObject:@"--zoom"];
+  if (zoomIdx != NSNotFound && zoomIdx + 1 < args.count)
+    [view zoomBy:args[zoomIdx + 1].floatValue];
+
   const NSUInteger renderIdx = [args indexOfObject:@"--render"];
   if (renderIdx != NSNotFound && renderIdx + 1 < args.count) {
     NSString *out = args[renderIdx + 1];
