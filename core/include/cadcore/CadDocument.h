@@ -203,13 +203,49 @@ class Document {
   // Chordal deviation used by the last tessellation, in mm.
   double deflection() const { return m_deflection; }
 
-  // Builds (once) and returns the GPU buffers. Tessellates if needed.
+  // The chordal deviation this model gets when nothing asks for a specific
+  // one: a thousandth of the bounding-box diagonal. A caller deriving a target
+  // from screen-space error needs it to know what the default is worth.
+  double automaticDeflection() const;
+
+  // Builds (once) and returns the GPU buffers, triangulating the shape itself.
+  // buildMeshLevel() works on a private copy instead, so the two do not
+  // interfere - but this one hands out a reference into the document, so a
+  // caller that re-meshes should hold a MeshLevel, which owns its mesh.
   const RenderMesh& renderMesh(double deflection = -1);
 
   // Throws the cached mesh away so the next renderMesh() re-tessellates. The
   // multiplier scales the automatic chordal deviation: below 1 is finer and
   // slower, above 1 is coarser and faster.
   void retessellate(double deflectionMultiplier);
+
+  // How finely to triangulate. Chordal deviation alone does not settle facet
+  // count on a curved face: for a cylinder of radius r a deviation d is met by
+  // a turn of about sqrt(8d/r) between facets, so on anything thin that works
+  // out coarser than the eye accepts and the angular cap is what binds. Both
+  // have to move together.
+  struct DetailTarget {
+    double deflection = -1;        // mm; <= 0 means automatic
+    double angularDegrees = 12.0;  // cap on the turn between facets
+  };
+
+  // One triangulation of the model, owned by the caller rather than the
+  // document, so a renderer can keep drawing the level it has while the next
+  // one is built.
+  struct MeshLevel {
+    std::shared_ptr<const RenderMesh> mesh;
+    double deflection = 0;
+    double angularDegrees = 0;
+    std::size_t triangles = 0;
+    bool valid() const { return mesh != nullptr; }
+  };
+
+  // Re-triangulates to `target` and extracts a fresh mesh. Safe to call from a
+  // background thread: this and every geometric query below take the same
+  // lock, and face and edge ids do not depend on the triangulation, so ids
+  // held by the caller stay meaningful across levels.
+  MeshLevel buildMeshLevel(const DetailTarget& target);
+
 
   // Exact query for a face picked out of the identity buffer.
   FaceInfo faceInfo(std::uint32_t faceId) const;

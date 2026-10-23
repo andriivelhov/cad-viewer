@@ -28,6 +28,12 @@ typedef NS_ENUM(NSInteger, CADInteractionMode) {
 @property(nonatomic) NSInteger shadingMode;          // 0 shaded+edges, 1 shaded, 2 wireframe
 @property(nonatomic) NSInteger tessellationQuality;  // 0 coarse, 1 normal, 2 fine
 @property(nonatomic) NSInteger antialiasingSamples;  // 1, 2, 4 or 8
+// Re-meshes to the detail the camera can actually resolve once it stops
+// moving, so zooming into a small feature stops showing the facets the model
+// was loaded with. Refines only: zooming out never drops below the Detail
+// setting. Runs on a background thread, and never inside the QuickLook
+// extensions, which have neither the time nor the memory budget for it.
+@property(nonatomic) BOOL adaptiveDetail;
 // True when the rendered ground at that end of the gradient is dark. The
 // background is chosen independently of the system theme, so overlay chrome has
 // to take its contrast from what is actually behind it.
@@ -73,6 +79,10 @@ typedef NS_ENUM(NSInteger, CADInteractionMode) {
 // Format, face count, triangle count and the chordal deflection actually used.
 - (NSString *)meshReport;
 - (void)zoomBy:(float)factor;
+// Brings the mesh up to what a viewport of this size can show, synchronously.
+// The live path waits for the camera to settle, and a headless render has no
+// run loop to settle in.
+- (void)refineDetailNowForSize:(CGSize)size;
 - (CGFloat)titlebarBandHeight;
 - (NSString *)simulateMeasureFromX:(uint32_t)x1 y:(uint32_t)y1
                                toX:(uint32_t)x2 y:(uint32_t)y2

@@ -44,6 +44,19 @@ def check(name, got, want):
 def defaults_set(key, value):
     subprocess.run(["defaults", "write", DOMAIN, key, "-int", str(value)], check=True)
 
+def defaults_bool(key, value):
+    subprocess.run(["defaults", "write", DOMAIN, key, "-bool",
+                    "true" if value else "false"], check=True)
+
+
+def mesh_stats(*args):
+    # (triangles, deflection, detail step) out of --stats.
+    out, _, _ = run(*args, "--stats")
+    f = out.split()
+    return (int(f[f.index("triangles") + 1]),
+            float(f[f.index("deflection") + 1]),
+            int(f[f.index("step") + 1]))
+
 
 def defaults_clear(*keys):
     for key in keys:
@@ -100,19 +113,121 @@ print("\nDetail: quality changes the mesh but never the measurement")
 # true whether or not the setting does anything - and it did not: the stored
 # quality was applied to the ivar but never to a document opened from Finder,
 # so every file was meshed at Normal. Assert the mesh actually moves.
+#
+# The pick is at 700,400 rather than 700,500 because picking is pixel-exact and
+# 700,500 sits on a feature edge: a headless pick now re-meshes to the same
+# detail the window would be showing, so the edge moves between quality levels
+# and that pixel lands on the spline at Draft and on the face at Fine. Both
+# answers are correct, which makes it the wrong pixel to ask. 700,400 is well
+# inside the column's 40 mm shaft.
 measurements = set()
 triangles = []
 for quality in (0, 1, 2):
     defaults_set("TessellationQuality", quality)
-    out, _, _ = run(sample("column.step"), "--pick", "700", "500")
+    out, _, _ = run(sample("column.step"), "--pick", "700", "400")
     measurements.add(out.split("⌀")[-1].strip())
     stats, _, _ = run(sample("column.step"), "--stats")
     triangles.append(int(stats.split("triangles")[1].split()[0]))
 defaults_clear("TessellationQuality")
 check("diameter identical at coarse, normal and fine detail",
-      measurements, {"28.0000 mm  (r 14.0000)"})
+      measurements, {"40.0000 mm  (r 20.0000)"})
 check("coarser detail really means fewer triangles",
       triangles[0] < triangles[1] < triangles[2], True)
+
+print("\nAdaptive detail: the mesh follows what the screen can actually show")
+# The mesh a model is loaded with is sized against the model, so magnifying a
+# small feature used to show the facets it was built with however fine the
+# Detail setting was - Detail is relative to the same bounding box. ring.step
+# is the shape that exposes it: 3 mm of tube swept around 80 mm.
+defaults_bool("AdaptiveDetail", False)
+flat = [mesh_stats(sample("ring.step"), "--zoom", z) for z in ("1", "2", "4")]
+check("with sharpening off, zooming in changes nothing",
+      {(t, round(d, 6), s) for t, d, s in flat}, {flat[0][:2] + (0,)})
+
+defaults_bool("AdaptiveDetail", True)
+sharp = [mesh_stats(sample("ring.step"), "--zoom", z) for z in ("1", "2", "4")]
+check("zooming in raises the triangle count",
+      sharp[0][0] < sharp[1][0] < sharp[2][0], True)
+check("zooming in tightens the chordal deviation",
+      sharp[0][1] > sharp[1][1] > sharp[2][1], True)
+# Against the chordal deviation, not the triangle count: the count is a cost,
+# not a quality. Letting the chordal test set facet count instead of holding
+# the angular cap down cut the count eightfold at the same deviation, and the
+# picture got no worse - a check written against the count would have called
+# that a regression.
+check("sharpening tightens the deviation well past the loaded mesh",
+      sharp[2][1] < flat[2][1] / 8 and sharp[2][0] > flat[2][0] * 2, True)
+
+# Detail has to keep meaning something: without a target per setting, adaptive
+# detail converges all three on the same mesh and the setting goes dead.
+spread = []
+for quality in (0, 1, 2):
+    defaults_set("TessellationQuality", quality)
+    spread.append(mesh_stats(sample("ring.step"), "--zoom", "4")[0])
+defaults_clear("TessellationQuality")
+check("Detail still separates the three levels once sharpened",
+      spread[0] < spread[1] < spread[2], True)
+
+# Ids come from the topology now, not from the triangulation, so a measurement
+# taken against a sharpened mesh has to land on the same geometry.
+measured = set()
+for adaptive in (False, True):
+    defaults_bool("AdaptiveDetail", adaptive)
+    out, _, _ = run(sample("column.step"), "--pick", "700", "400")
+    measured.add(out)
+check("sharpening never moves a measurement", len(measured), 1)
+
+defaults_bool("AdaptiveDetail", True)
+sharp_png = os.path.join(os.environ.get("TMPDIR", "/tmp"), "regress_sharp.png")
+_, _, rc = run(sample("ring.step"), "--zoom", "4", "--render", sharp_png)
+check("a sharpened view still renders",
+      rc == 0 and os.path.exists(sharp_png) and os.path.getsize(sharp_png) > 5000,
+      True)
+# Runaway refinement is how this feature breaks badly, so the budget that stops
+# it is worth asserting rather than trusting.
+check("the budget caps refinement rather than letting it run away",
+      mesh_stats(sample("ring.step"), "--zoom", "400")[0] < 6000000, True)
+defaults_clear("AdaptiveDetail")
+
+# Does the sharpened mesh actually look more like the surface? Triangle counts
+# say the mesh changed, not that the picture got better. Rendering the same
+# view three ways and measuring each against the fully-resolved one answers the
+# question the feature was built for.
+try:
+    import numpy as np
+    from PIL import Image
+except ImportError:
+    print("  skip  pixel comparison needs numpy and pillow")
+else:
+    def render(name, adaptive, quality):
+        defaults_bool("AdaptiveDetail", adaptive)
+        defaults_set("TessellationQuality", quality)
+        path = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"regress_{name}.png")
+        run(sample("ring.step"), "--zoom", "18", "--render", path)
+        return np.asarray(Image.open(path).convert("RGB")).astype(float)
+
+    coarse = render("coarse", False, 1)
+    sharp = render("sharp", True, 1)
+    truth = render("truth", True, 2)
+    defaults_clear("AdaptiveDetail", "TessellationQuality")
+    off = np.abs(coarse - truth).mean()
+    on = np.abs(sharp - truth).mean()
+    check(f"the sharpened render is closer to the real surface "
+          f"({off:.3f} -> {on:.3f})", on < off / 1.5, True)
+
+# The live path, not the synchronous one every check above uses: a real window,
+# a real run loop, the settle timer, the background build and the upload. This
+# is the part that can be perfectly correct in policy and still never fire.
+defaults_bool("AdaptiveDetail", True)
+out, _, _ = run(sample("ring.step"), "--settle", "5")
+live = int(out.split("step")[-1].strip()) if "step" in out else -1
+check("sharpening fires on its own once the camera settles", live > 0, True)
+
+defaults_bool("AdaptiveDetail", False)
+out, _, _ = run(sample("ring.step"), "--settle", "5")
+check("and does not fire when it is switched off",
+      out.split("step")[-1].strip(), "0")
+defaults_clear("AdaptiveDetail")
 
 print("\nRendering: every shading mode and background produces a real image")
 scratch = os.environ.get("TMPDIR", "/tmp")

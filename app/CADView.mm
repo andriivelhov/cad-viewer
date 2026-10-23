@@ -51,6 +51,33 @@ constexpr CGFloat kTitlebarBand = 32.0;
 // scales the angular limit that dominates on small-radius curvature.
 constexpr double kTessellationMultipliers[] = {3.0, 1.0, 0.35};
 
+// Adaptive detail. The mesh a model is loaded with is sized against the model,
+// so magnifying a 0.5 mm wire shows the facets of that wire however fine the
+// Detail setting is. These govern re-meshing against what the screen can
+// actually show instead.
+//
+// Target silhouette error in drawable pixels, per Detail setting. Facets stop
+// reading as facets below about one pixel, so Normal asks for half of one and
+// leaves headroom for the shading to be slightly wrong as well.
+//
+// Per setting rather than one figure for all three, because otherwise adaptive
+// detail converges every setting on the same mesh and Detail stops meaning
+// anything the moment you zoom. This way it keeps meaning how good the part
+// should look, and adaptive detail is what holds that promise as you move.
+constexpr double kDetailPixelError[] = {1.5, 0.5, 0.2};
+// Each step halves the chordal deviation, so six steps is 64x finer than the
+// Detail setting. Past that the limit is the surface, not the mesh.
+constexpr int kMaxDetailStep = 6;
+// Stop refining once a level costs this much. This is about staying
+// responsive, not about memory: the budget gets reached by zooming into a
+// large assembly, where re-meshing every part to look at one of them is the
+// wrong thing to be doing anyway.
+constexpr std::size_t kDetailTriangleBudget = 3000000;
+constexpr double kDetailSecondsBudget = 2.5;
+// How still the camera has to be before re-meshing: long enough not to fire
+// mid-gesture, short enough to read as a consequence of having stopped.
+constexpr NSTimeInterval kDetailSettleDelay = 0.3;
+
 // Faces and edges share the identity buffer; the top bit says which.
 bool isEdgeId(uint32_t entityId) {
   return entityId != FACE_ID_NONE && (entityId & ENTITY_EDGE_FLAG) != 0;
@@ -126,7 +153,20 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
   BOOL _pickIsShift;
   CGPoint _pickPoint;
 
-  std::unique_ptr<cadcore::Document> _doc;
+  // Shared rather than unique: a background re-mesh holds the document for as
+  // long as it runs, which can outlive the user opening another file.
+  std::shared_ptr<cadcore::Document> _doc;
+
+  // The triangulation currently on the GPU, owned here so a background build
+  // can replace the document's own cache without pulling it out from under the
+  // renderer.
+  cadcore::Document::MeshLevel _level;
+  int _detailStep;              // halvings of deviation beyond the Detail setting
+  int _detailCeiling;           // highest step the budget has allowed so far
+  uint64_t _detailSettleToken;  // cancels a settle timer the camera outran
+  uint64_t _detailBuildToken;   // discards a build another one superseded
+  BOOL _detailBuildInFlight;
+  dispatch_queue_t _detailQueue;
 
   // Orbit camera around the model centre.
   simd_float3 _target;
@@ -195,6 +235,9 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
     self.paused = YES;
     _hoverEntity = FACE_ID_NONE;
     _inspectionZoom = 1.0f;
+    _detailCeiling = kMaxDetailStep;
+    _detailQueue = dispatch_queue_create("app.cadviewer.detail",
+                                         DISPATCH_QUEUE_SERIAL);
     _backgroundStyle =
         [NSUserDefaults.standardUserDefaults integerForKey:@"BackgroundStyle"];
     [self applyStoredSettings];
@@ -662,22 +705,26 @@ typedef struct {
     return NO;
   }
 
-  // Apply the stored Detail setting before the mesh is built. applyStoredSettings
-  // only assigns the ivar, and retessellate runs from the setter, so a file
-  // opened from Finder or the command line was always meshed at the default -
-  // the setting appeared to do nothing until it was changed with a part open.
-  doc->retessellate(kTessellationMultipliers[std::clamp<NSInteger>(
-      _tessellationQuality, 0, 2)]);
-
-  const cadcore::RenderMesh &mesh = doc->renderMesh();
-  if (mesh.empty()) {
+  // Build at the stored Detail setting before anything is uploaded.
+  // applyStoredSettings only assigns the ivar and the re-mesh used to run from
+  // the setter, so a file opened from Finder or the command line was always
+  // meshed at the default - the setting appeared to do nothing until it was
+  // changed with a part already open.
+  cadcore::Document::MeshLevel level =
+      doc->buildMeshLevel([self detailTargetForStep:0 inDocument:*doc]);
+  if (!level.valid() || level.mesh->empty()) {
     if (outError) *outError = @"file loaded but produced no geometry";
     return NO;
   }
 
-  // Assign before uploading: uploadMeshBuffers reads _doc.
   _doc = std::move(doc);
+  // Assign before uploading: uploadMeshBuffers reads the level.
+  _level = level;
+  _detailStep = 0;
+  _detailCeiling = kMaxDetailStep;
+  ++_detailBuildToken;  // a build still running belongs to the old document
   [self uploadMeshBuffers];
+  const cadcore::RenderMesh &mesh = *_level.mesh;
 
   _selection.clear();
   [self uploadSelectionFlags];
@@ -695,8 +742,8 @@ typedef struct {
 }
 
 - (void)uploadMeshBuffers {
-  if (!_doc) return;
-  const cadcore::RenderMesh &mesh = _doc->renderMesh();
+  if (!_level.valid()) return;
+  const cadcore::RenderMesh &mesh = *_level.mesh;
   _vertexBuffer = [self.device
       newBufferWithBytes:mesh.vertices.data()
                   length:mesh.vertices.size() * sizeof(cadcore::RenderVertex)
@@ -807,11 +854,18 @@ typedef struct {
   // Distance to the *near* face, so the closest part of the model still fits
   // inside the frustum angle; then a little breathing room.
   constexpr float kFitMargin = 1.08f;
-  _distance = std::max(halfHeight / tanY, halfWidth / tanX) * kFitMargin +
-              halfDepth;
+  const float fitDistance =
+      std::max(halfHeight / tanY, halfWidth / tanX) * kFitMargin;
+
   // Applied here rather than at the call site: an offscreen render re-frames
   // the model, which would otherwise throw away a zoom set beforehand.
-  _distance /= std::max(_inspectionZoom, 1e-3f);
+  //
+  // The zoom divides the gap to the *near* surface, not the distance to the
+  // pivot. Dividing the pivot distance makes magnification saturate: the eye
+  // closes on the centre of the box while the geometry it is looking at stays
+  // its own half-depth away, so past a point the part stops getting bigger
+  // however far the zoom goes. 40x came out at barely 6x before this.
+  _distance = halfDepth + fitDistance / std::max(_inspectionZoom, 1e-3f);
   _distance = std::max(_distance, 1e-4f);
 }
 
@@ -871,10 +925,230 @@ typedef struct {
   if (!_doc) return;
   // Draft is coarser and faster; fine is denser and slower. The mesh has to be
   // rebuilt and re-uploaded, so this is the one setting that costs real time.
-  _doc->retessellate(
-      kTessellationMultipliers[std::clamp<NSInteger>(quality, 0, 2)]);
+  [self rebuildAtDetailStep:0];
+  [self scheduleDetailRefinement];
+}
+
+#pragma mark - Adaptive detail
+
+// The mesh a model is loaded with is sized against the model, not against the
+// screen. That is the right default - it is what makes one setting work for a
+// washer and for an engine - but it means the facet size is fixed at load, so
+// magnifying a small feature eventually shows the polygons it was built from
+// and no Detail setting can help, because Detail is relative to the same
+// bounding box. Everything below re-meshes against what the screen can show.
+
+// The target the Detail setting alone would ask for, halved `step` times.
+- (cadcore::Document::DetailTarget)detailTargetForStep:(int)step
+                                            inDocument:(const cadcore::Document &)doc {
+  const double multiplier =
+      kTessellationMultipliers[std::clamp<NSInteger>(_tessellationQuality, 0, 2)];
+  cadcore::Document::DetailTarget target;
+  target.deflection =
+      doc.automaticDeflection() * multiplier * std::pow(0.5, double(step));
+  // The angular cap stays where the Detail setting put it, and does not chase
+  // the deviation down. It only exists because a deviation measured against
+  // the model lets a thin round feature off with a handful of facets however
+  // fine the setting is - and that stops being true here, because this
+  // deviation is measured against the screen. For a radius r a deviation d is
+  // met by a turn of about sqrt(8d/r), so once d is small the chordal test
+  // asks for the right facet count on every radius by itself, and holding the
+  // cap tighter than that only buys triangles. Measured on the ring: scaling
+  // the cap down with the deviation cost 227k triangles where 15k looked the
+  // same.
+  target.angularDegrees = std::clamp(12.0 * multiplier, 5.0, 45.0);
+  return target;
+}
+
+// How far the nearest thing that could be on screen is from the eye, measured
+// along the view axis. The oriented bounding box rather than the bounding
+// sphere, which on a flat part like a ring is most of a diameter too
+// pessimistic; and not the distance to the orbit pivot, which stops tracking
+// the surface as soon as the eye closes past the pivot - zooming in then
+// leaves the estimate stuck at the pivot's own distance and the detail stops
+// following the zoom.
+- (double)nearSurfaceDistance {
+  const simd_float3 eye = [self eyePosition];
+  const simd_float3 forward = simd_normalize(_target - eye);
+  const auto &b = _doc->bounds();
+  if (!b.valid) return std::max<double>(_distance, 1e-6);
+  float nearest = INFINITY;
+  for (int corner = 0; corner < 8; ++corner) {
+    const simd_float3 p =
+        simd_make_float3(float((corner & 1) ? b.max[0] : b.min[0]),
+                         float((corner & 2) ? b.max[1] : b.min[1]),
+                         float((corner & 4) ? b.max[2] : b.min[2]));
+    nearest = std::min(nearest, simd_dot(p - eye, forward));
+  }
+  // Inside the box, or behind the eye: fall back to a small fraction of the
+  // model rather than dividing by something at or below zero. The step cap and
+  // the triangle budget are what stop this running away.
+  return std::max<double>(nearest, double(_modelRadius) * 1e-3);
+}
+
+// A chordal deviation d at eye distance z covers d*h/(2*z*tan(fov/2)) drawable
+// pixels, so the deviation worth meshing to is that solved for the error we
+// are willing to accept.
+- (double)deflectionForPixelError:(double)pixels viewportHeight:(double)height {
+  const double tanY = std::tan(kFovYDegrees * 0.5 * M_PI / 180.0);
+  return pixels * 2.0 * [self nearSurfaceDistance] * tanY /
+         std::max(height, 1.0);
+}
+
+- (double)detailViewportHeight {
+  // An offscreen render rasterises at its own size, and that is the size whose
+  // pixels the detail has to satisfy.
+  if (_renderSizeOverride.height > 0) return _renderSizeOverride.height;
+  return std::max<double>(self.drawableSize.height, 1.0);
+}
+
+- (int)detailStepForViewportHeight:(double)height {
+  if (!_doc) return 0;
+  const double base = [self detailTargetForStep:0 inDocument:*_doc].deflection;
+  const double want =
+      [self deflectionForPixelError:kDetailPixelError[std::clamp<NSInteger>(
+                                        _tessellationQuality, 0, 2)]
+                     viewportHeight:height];
+  // Never coarser than the Detail setting. Zooming out is not a reason to
+  // throw away detail that was asked for, and a model that visibly degrades
+  // as you pull back from it looks broken rather than efficient.
+  if (want >= base) return 0;
+  const int step = int(std::ceil(std::log2(base / want)));
+  return std::clamp(step, 0, std::min(kMaxDetailStep, _detailCeiling));
+}
+
+// Synchronous: used at load, when the Detail setting changes, and when
+// adaptive detail is switched off, where there is nothing to wait for.
+- (void)rebuildAtDetailStep:(int)step {
+  if (!_doc) return;
+  cadcore::Document::MeshLevel level =
+      _doc->buildMeshLevel([self detailTargetForStep:step inDocument:*_doc]);
+  if (!level.valid()) return;
+  ++_detailBuildToken;  // anything in flight is now stale
+  // Going back to the baseline means the Detail setting changed or sharpening
+  // was switched off, and either way what a level costs is now a different
+  // question than the one the old ceiling answered.
+  if (step == 0) _detailCeiling = kMaxDetailStep;
+  _level = level;
+  _detailStep = step;
   [self uploadMeshBuffers];
+  [self uploadSelectionFlags];
   [self setNeedsDisplay:YES];
+}
+
+// Called after every frame. Drawing is on demand here, so a frame means
+// something changed, and the token means only the last of a burst survives.
+- (void)scheduleDetailRefinement {
+  if (!_adaptiveDetail || _headless || !_doc) return;
+  const uint64_t token = ++_detailSettleToken;
+  __weak CADView *weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               int64_t(kDetailSettleDelay * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [weakSelf detailSettledWithToken:token];
+                 });
+}
+
+- (void)detailSettledWithToken:(uint64_t)token {
+  if (token != _detailSettleToken) return;  // the camera moved again
+  if (_detailBuildInFlight || !_adaptiveDetail || !_doc) return;
+  const int want = [self detailStepForViewportHeight:[self detailViewportHeight]];
+  if (want == _detailStep) return;
+  // Up one step at a time: what a level costs is only knowable by building it,
+  // so doubling and re-checking is how the budget gets a say before the jump
+  // that would blow it. Coming back down is cheap, so that goes straight there.
+  [self beginDetailBuildForStep:(want > _detailStep ? _detailStep + 1 : want)];
+}
+
+- (void)beginDetailBuildForStep:(int)step {
+  const cadcore::Document::DetailTarget target =
+      [self detailTargetForStep:step inDocument:*_doc];
+  std::shared_ptr<cadcore::Document> doc = _doc;
+  const uint64_t token = ++_detailBuildToken;
+  _detailBuildInFlight = YES;
+  __weak CADView *weakSelf = self;
+  dispatch_async(_detailQueue, ^{
+    const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+    cadcore::Document::MeshLevel level = doc->buildMeshLevel(target);
+    const double seconds = CFAbsoluteTimeGetCurrent() - started;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf finishDetailBuild:level
+                             step:step
+                          seconds:seconds
+                            token:token];
+    });
+  });
+}
+
+- (void)finishDetailBuild:(cadcore::Document::MeshLevel)level
+                     step:(int)step
+                  seconds:(double)seconds
+                    token:(uint64_t)token {
+  _detailBuildInFlight = NO;
+  // A newer build, a Detail change or another file opening invalidates this.
+  if (token != _detailBuildToken || !level.valid()) return;
+
+  // What a level costs is only known once it exists, so the budget is applied
+  // here rather than predicted: keep the level that was paid for, and remember
+  // not to ask for a finer one.
+  _detailCeiling = (level.triangles > kDetailTriangleBudget ||
+                    seconds > kDetailSecondsBudget)
+                       ? step
+                       : kMaxDetailStep;
+
+  _level = level;
+  _detailStep = step;
+  [self uploadMeshBuffers];
+  // Face and edge ids come from the topology, not the mesh, so a selection
+  // made at one level still refers to the same geometry at the next - but the
+  // flag buffers were just reallocated, so they have to be rewritten.
+  [self uploadSelectionFlags];
+  [self report:step > 0
+                   ? [NSString stringWithFormat:
+                         @"sharpened ×%d  ·  %zu triangles", 1 << step,
+                         _level.triangles]
+                   : [NSString stringWithFormat:
+                         @"back to the Detail setting  ·  %zu triangles",
+                         _level.triangles]];
+  [self setNeedsDisplay:YES];
+}
+
+- (void)refineDetailNowForSize:(CGSize)size {
+  if (!_adaptiveDetail || !_doc) return;
+  _renderSizeOverride = size;
+  [self fitToCurrentOrientationWithAspect:
+            float(size.width / std::max<CGFloat>(size.height, 1))];
+  // Same one-step-at-a-time walk as the live path, so a headless render
+  // reports the level the app would actually have reached, budget included.
+  while (true) {
+    const int want = [self detailStepForViewportHeight:double(size.height)];
+    if (want <= _detailStep) break;
+    const int step = _detailStep + 1;
+    const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+    cadcore::Document::MeshLevel level =
+        _doc->buildMeshLevel([self detailTargetForStep:step inDocument:*_doc]);
+    const double seconds = CFAbsoluteTimeGetCurrent() - started;
+    if (!level.valid()) break;
+    _level = level;
+    _detailStep = step;
+    if (level.triangles > kDetailTriangleBudget || seconds > kDetailSecondsBudget) {
+      _detailCeiling = step;
+      break;
+    }
+  }
+  [self uploadMeshBuffers];
+  [self uploadSelectionFlags];
+}
+
+- (void)setAdaptiveDetail:(BOOL)on {
+  _adaptiveDetail = on;
+  [NSUserDefaults.standardUserDefaults setBool:on forKey:@"AdaptiveDetail"];
+  if (!_doc) return;
+  if (on) {
+    [self scheduleDetailRefinement];
+  } else if (_detailStep != 0) {
+    [self rebuildAtDetailStep:0];  // turning it off has to undo it
+  }
 }
 
 // Not every GPU offers every level - Apple silicon tops out at 4x, and asking
@@ -930,6 +1204,9 @@ typedef struct {
                              : 1;  // Normal
   _showViewCube = [d objectForKey:@"ShowViewCube"] ? [d boolForKey:@"ShowViewCube"]
                                                    : YES;
+  _adaptiveDetail = [d objectForKey:@"AdaptiveDetail"]
+                        ? [d boolForKey:@"AdaptiveDetail"]
+                        : YES;
   _antialiasingSamples = (NSInteger)_sampleCount;
 }
 
@@ -1320,6 +1597,9 @@ typedef struct {
   // Frame and rasterise for the output size; the window's is irrelevant here.
   _renderSizeOverride = size;
   [self fitToCurrentOrientationWithAspect:float(size.width / size.height)];
+  // There is no run loop here for the live path to settle in, so the detail
+  // this size needs has to be brought up before the pass is encoded.
+  [self refineDetailNowForSize:size];
 
   Uniforms u = [self uniformsForAspect:float(size.width / size.height)];
   id<MTLCommandBuffer> cmd = [_queue commandBuffer];
@@ -1382,6 +1662,9 @@ typedef struct {
   // Frame for the same size the render uses, or pick coordinates and rendered
   // pixels refer to different cameras.
   [self fitToCurrentOrientationWithAspect:float(size.width / size.height)];
+  // And at the same detail, or a headless pick reads an identity buffer drawn
+  // from a mesh the window would never have been showing.
+  [self refineDetailNowForSize:size];
   _renderSizeOverride = size;
   [self ensureFaceIdTextureOfSize:size];
 
@@ -1600,6 +1883,12 @@ typedef struct {
 
   [cmd presentDrawable:drawable];
   [cmd commit];
+
+  // Drawing here is on demand, so a frame means the camera or the model
+  // changed. That makes this the one place that sees every change, including
+  // the ones that arrive through the view cube and the headless flags rather
+  // than through an event handler.
+  [self scheduleDetailRefinement];
 }
 
 - (void)encodePickResolveInto:(id<MTLCommandBuffer>)cmd
@@ -2342,17 +2631,17 @@ static constexpr float kSnapRadiusPixels = 14.0f;
 // invisible on a whole-part view are obvious here.
 - (void)zoomBy:(float)factor {
   if (factor > 0) _inspectionZoom = factor;
-  _distance /= std::max(factor, 1e-3f);
+  [self fitToCurrentOrientation];
   [self setNeedsDisplay:YES];
 }
 
 - (NSString *)meshReport {
-  if (!_doc) return @"no document";
+  if (!_doc || !_level.valid()) return @"no document";
   const auto &s = _doc->stats();
-  return [NSString stringWithFormat:@"%s faces %d triangles %zu deflection %.6f",
-                                    _doc->format().id.c_str(), s.faces,
-                                    _doc->renderMesh().indices.size() / 3,
-                                    _doc->deflection()];
+  return [NSString stringWithFormat:
+      @"%s faces %d triangles %zu deflection %.6f detail step %d",
+      _doc->format().id.c_str(), s.faces, _level.triangles, _level.deflection,
+      _detailStep];
 }
 
 - (NSString *)cameraReport {

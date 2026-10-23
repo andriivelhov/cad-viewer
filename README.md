@@ -32,6 +32,9 @@ and give exact numbers.**
   and files get real thumbnails instead of a generic icon.
 - **Behaves like a Mac app.** Multiple windows, ⌘W closes one and the app stays,
   a view cube for orientation, light and dark.
+- **Detail that follows the camera.** Zoom into a 0.5 mm spring wire and it
+  re-meshes to what the screen can show, instead of showing you the facets it
+  was loaded with.
 - **Settings that matter.** Units, background, shading, level of detail and
   anti-aliasing — ⌘, and every open window updates.
 
@@ -117,7 +120,8 @@ remembered.
 | **Units** | Millimetres, centimetres, metres or inches. Only the display changes — measurement is always computed in millimetres from the geometry. |
 | **Background** | Automatic (follows the system theme) or a fixed scene. |
 | **Shading** | Shaded with edges, shaded, or wireframe with hidden lines removed. |
-| **Detail** | How finely curved faces are tessellated. Trades load time against smoothness; measurements are unaffected, because they come from the geometry rather than the mesh. |
+| **Detail** | How finely curved faces are tessellated, and how sharp the part is held as you zoom. Trades load time against smoothness; measurements are unaffected, because they come from the geometry rather than the mesh. |
+| **Sharpen detail when zoomed in** | Re-meshes the part to the detail the screen can actually show, once the camera stops moving. On by default. |
 | **Anti-aliasing** | Off, or 2×/4×/8× multisampling — only the levels your GPU supports are offered. Apple silicon tops out at 4×. |
 
 ![Settings](docs/settings.png)

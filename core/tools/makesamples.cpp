@@ -5,6 +5,7 @@
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <DE_Wrapper.hxx>
 #include <TDocStd_Document.hxx>
@@ -71,6 +72,21 @@ int main(int argc, char** argv) {
   BRepMesh_IncrementalMesh(column, 0.4, Standard_False, 0.35, Standard_True);
   de->Write(TCollection_AsciiString((outDir + "/column.step").c_str()), columnDoc);
   std::printf("  column.step written (40 dia x 600 long, 5 bosses)\n");
+
+  // A thin ring: 3 mm of tube swept around 80 mm. Tessellation is relative to
+  // the whole model, so the tube gets a mesh sized for an 80 mm part and shows
+  // its facets as soon as you magnify it - the same shape of problem as a
+  // spring wire, which is where this came from. The case adaptive detail
+  // exists for, in a file we own.
+  TopoDS_Shape ring =
+      BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 40.0, 1.5)
+          .Shape();
+  Handle(TDocStd_Document) ringDoc;
+  XCAFApp_Application::GetApplication()->NewDocument("BinXCAF", ringDoc);
+  XCAFDoc_DocumentTool::ShapeTool(ringDoc->Main())->AddShape(ring);
+  BRepMesh_IncrementalMesh(ring, 0.08, Standard_False, 0.35, Standard_True);
+  de->Write(TCollection_AsciiString((outDir + "/ring.step").c_str()), ringDoc);
+  std::printf("  ring.step written (80 dia sweep, 3 dia tube)\n");
 
   std::printf("\nplate is 100 x 60 x 10 mm with holes d=12, 8, 6, 5 mm\n");
   return 0;

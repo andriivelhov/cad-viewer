@@ -23,7 +23,7 @@
 @implementation SettingsWindowController {
   __weak id<SettingsDelegate> _owner;
   NSPopUpButton *_units, *_background, *_shading, *_quality, *_antialiasing;
-  NSButton *_viewCube, *_materials;
+  NSButton *_viewCube, *_materials, *_adaptive;
   NSArray<NSNumber *> *_aaSamples;
 }
 
@@ -73,6 +73,16 @@
     _viewCube.state = viewer.showViewCube ? NSControlStateValueOn
                                           : NSControlStateValueOff;
 
+    _adaptive = [NSButton checkboxWithTitle:@"Sharpen detail when zoomed in"
+                                     target:self
+                                     action:@selector(adaptiveChanged:)];
+    _adaptive.state = viewer.adaptiveDetail ? NSControlStateValueOn
+                                            : NSControlStateValueOff;
+    _adaptive.toolTip = @"Re-meshes a part to the detail the screen can show "
+                        @"once the camera stops moving, so magnifying a small "
+                        @"feature does not show the facets the model was "
+                        @"loaded with.";
+
     _materials = [NSButton checkboxWithTitle:@"Use materials from the file"
                                       target:nil
                                       action:nil];
@@ -87,6 +97,7 @@
       @[ [self label:@"Shading"], _shading ],
       @[ [self label:@"Detail"], _quality ],
       @[ [self label:@"Anti-aliasing"], _antialiasing ],
+      @[ [NSGridCell emptyContentView], _adaptive ],
       @[ [NSGridCell emptyContentView], _viewCube ],
       @[ [NSGridCell emptyContentView], _materials ],
     ]];
@@ -98,8 +109,11 @@
     NSTextField *note = [NSTextField
         wrappingLabelWithString:@"Detail trades load time against how smooth "
                                 @"curved faces look; changing it rebuilds the "
-                                @"model. Measurements stay exact either way — "
-                                @"they come from the geometry, not the mesh."];
+                                @"model. It is relative to the size of the "
+                                @"part, so sharpening is what keeps a small "
+                                @"feature smooth when you magnify it. "
+                                @"Measurements stay exact either way — they "
+                                @"come from the geometry, not the mesh."];
     note.font = [NSFont systemFontOfSize:11];
     note.textColor = NSColor.secondaryLabelColor;
     note.translatesAutoresizingMaskIntoConstraints = NO;
@@ -167,6 +181,10 @@
       _antialiasing.indexOfSelectedItem, 0, (NSInteger)_aaSamples.count - 1);
   const NSInteger v = _aaSamples[index].integerValue;
   [_owner applySettings:^(CADView *viewer) { viewer.antialiasingSamples = v; }];
+}
+- (void)adaptiveChanged:(id)s {
+  const BOOL on = _adaptive.state == NSControlStateValueOn;
+  [_owner applySettings:^(CADView *viewer) { viewer.adaptiveDetail = on; }];
 }
 - (void)viewCubeChanged:(id)s {
   const BOOL on = _viewCube.state == NSControlStateValueOn;
@@ -666,6 +684,13 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
     [self exitHeadless:0];
   }
 
+  // Ahead of the flags below rather than next to --render, so --stats reports
+  // the mesh at the zoom asked for: the detail a camera needs is the whole
+  // point of looking at a part up close.
+  const NSUInteger zoomIdx = [args indexOfObject:@"--zoom"];
+  if (zoomIdx != NSNotFound && zoomIdx + 1 < args.count)
+    [view zoomBy:args[zoomIdx + 1].floatValue];
+
   // Dragging the window by its titlebar used to orbit the model too, because
   // a full-size-content window puts the view under the titlebar. Needs a real
   // window: without one there is no titlebar band to be inside of.
@@ -686,7 +711,27 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
     [self exitHeadless:0];
   }
 
+  // Everything else here refines synchronously, which exercises the policy but
+  // not the machinery around it. This one opens a real window, lets the run
+  // loop turn, and reports what landed - so the settle timer, the background
+  // build and the upload that follows it are covered too.
+  const NSUInteger settleIdx = [args indexOfObject:@"--settle"];
+  if (settleIdx != NSNotFound && settleIdx + 1 < args.count) {
+    const double seconds = std::max(args[settleIdx + 1].doubleValue, 0.5);
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, int64_t(seconds * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          printf("%s\n", [self.activeViewer meshReport].UTF8String);
+          [self exitHeadless:0];
+        });
+    [NSApp activateIgnoringOtherApps:YES];
+    return;
+  }
+
   if ([args containsObject:@"--stats"]) {
+    // Same viewport every other headless flag assumes, so the detail level
+    // reported is the one a render at that size would get.
+    [self.activeViewer refineDetailNowForSize:CGSizeMake(1400, 950)];
     printf("%s\n", [self.activeViewer meshReport].UTF8String);
     [self exitHeadless:0];
   }
@@ -737,10 +782,6 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
   const NSUInteger hovIdx = [args indexOfObject:@"--hover"];
   if (hovIdx != NSNotFound && hovIdx + 1 < args.count)
     [view highlightEntity:(uint32_t)args[hovIdx + 1].longLongValue];
-
-  const NSUInteger zoomIdx = [args indexOfObject:@"--zoom"];
-  if (zoomIdx != NSNotFound && zoomIdx + 1 < args.count)
-    [view zoomBy:args[zoomIdx + 1].floatValue];
 
   const NSUInteger renderIdx = [args indexOfObject:@"--render"];
   if (renderIdx != NSNotFound && renderIdx + 1 < args.count) {

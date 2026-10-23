@@ -4,8 +4,10 @@
 
 #include "cadcore/CadDocument.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -19,6 +21,58 @@ static void printFormats() {
   for (const auto& f : Document::supportedFormats())
     std::printf("  .%-6s %-6s %s\n", f.extension.c_str(), f.id.c_str(),
                 toString(f.fidelity));
+}
+
+// Re-meshing runs on a background thread while the window keeps picking and
+// measuring, so the document is read and written at the same time by design.
+// This drives both sides as hard as they can go, which is the only way to find
+// out whether the lock around the shape actually covers everything - run it
+// under -fsanitize=thread to make a miss fail loudly rather than rarely.
+static int threadStress(Document& doc, int seconds) {
+  std::atomic<bool> stop{false};
+  std::atomic<long> queries{0}, levels{0}, mismatches{0};
+
+  // Whatever the first query says is the truth; a re-mesh must not change it.
+  // Taken after one level exists, so this measures re-meshing rather than the
+  // difference between a cold document and a warm one.
+  doc.buildMeshLevel({});
+  const FaceInfo reference = doc.faceInfo(0);
+
+  std::thread reader([&] {
+    while (!stop.load(std::memory_order_relaxed)) {
+      const FaceInfo info = doc.faceInfo(0);
+      if (info.valid != reference.valid ||
+          std::abs(info.area - reference.area) > 1e-9)
+        mismatches.fetch_add(1);
+      doc.edgeInfo(0);
+      double d = 0;
+      doc.distanceBetween(EntityKind::Face, 0, EntityKind::Face, 1, d);
+      queries.fetch_add(1);
+    }
+  });
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+  const double base = doc.automaticDeflection();
+  for (int i = 0; std::chrono::steady_clock::now() < deadline; ++i) {
+    Document::DetailTarget target;
+    target.deflection = base * (i % 2 ? 0.5 : 1.0);
+    target.angularDegrees = (i % 2) ? 6.0 : 12.0;
+    const Document::MeshLevel level = doc.buildMeshLevel(target);
+    if (!level.valid() || level.mesh->empty()) {
+      std::printf("  stress        level %d came back empty\n", i);
+      stop = true;
+      reader.join();
+      return 1;
+    }
+    levels.fetch_add(1);
+  }
+  stop = true;
+  reader.join();
+  std::printf("  stress        %ld levels rebuilt against %ld concurrent "
+              "queries, %ld mismatches\n",
+              levels.load(), queries.load(), mismatches.load());
+  return mismatches.load() == 0 ? 0 : 1;
 }
 
 int main(int argc, char** argv) {
@@ -146,6 +200,12 @@ int main(int argc, char** argv) {
   for (int i = 2; i + 1 < argc; ++i)
     if (std::string(argv[i]) == "--quality")
       doc->retessellate(std::atof(argv[i + 1]));
+
+  for (int i = 2; i < argc; ++i)
+    if (std::string(argv[i]) == "--stress") {
+      const int seconds = (i + 1 < argc) ? std::atoi(argv[i + 1]) : 3;
+      return threadStress(*doc, seconds > 0 ? seconds : 3);
+    }
 
   auto t2 = std::chrono::steady_clock::now();
   const auto& mesh = doc->renderMesh();

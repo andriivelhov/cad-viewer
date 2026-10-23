@@ -38,6 +38,7 @@
 #include <gp.hxx>
 #include <gp_Pln.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepGProp.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_Surface.hxx>
@@ -48,6 +49,7 @@
 #include <cstdlib>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 
 namespace cadcore {
@@ -57,10 +59,43 @@ struct Document::Impl {
   TopoDS_Shape shape;
   std::vector<TopoDS_Face> facesById;  // index == faceId
   std::vector<TopoDS_Edge> edgesById;  // index == edgeId
-  RenderMesh mesh;
-  bool meshBuilt = false;
+  std::shared_ptr<const RenderMesh> mesh;
   double deflectionMultiplier = 1.0;
   double angularDegrees = 12.0;
+
+  // A private copy of the shape, triangulated instead of the original.
+  //
+  // Re-meshing runs on a background thread while the window keeps drawing and
+  // the user keeps picking, and BRepMesh writes into the very faces that
+  // faceInfo() and the snapping code read - including flag bits on the shared
+  // TShape, so this is a real data race and not a theoretical one. Guarding it
+  // with a lock works but makes a click wait for the re-mesh: measured against
+  // back-to-back rebuilds, the reader got through once in five seconds.
+  //
+  // Copying costs one deep copy of the B-rep, paid once. After that the
+  // original is never written again, so queries read immutable data and take
+  // no lock at all.
+  TopoDS_Shape workbench;
+  std::vector<TopoDS_Face> workbenchFaces;  // same ids as facesById
+  std::vector<TopoDS_Edge> workbenchEdges;  // same ids as edgesById
+  std::mutex meshLock;                      // one buildMeshLevel at a time
+  bool ensureWorkbench();
+
+  // Guards the paths that still write to the original shape: tessellate(),
+  // retessellate() and renderMesh(). Recursive because they call each other.
+  mutable std::recursive_mutex lock;
+
+  // Fills facesById/edgesById from the topology. Deliberately independent of
+  // any triangulation: ids that shifted when the mesh changed would silently
+  // repoint a live selection or a half-finished measurement at different
+  // geometry every time the detail level moved. Called once, at load, so the
+  // maps are immutable by the time any thread exists.
+  void buildIdMaps();
+  // Reads the triangulations currently on `faces`/`edges` into GPU buffers.
+  void extract(RenderMesh& out, Fidelity fidelity,
+               const std::vector<TopoDS_Face>& faces,
+               const std::vector<TopoDS_Edge>& edges,
+               const TopoDS_Shape& from) const;
 };
 
 namespace {
@@ -284,6 +319,11 @@ std::unique_ptr<Document> Document::load(const std::string& path,
 void Document::analyze() {
   const TopoDS_Shape& shape = m_impl->shape;
 
+  // Here rather than lazily: every query indexes these, and building them once
+  // while the document is still single-threaded is what lets the queries run
+  // without a lock once a background re-mesh is possible.
+  m_impl->buildIdMaps();
+
   Bnd_Box box;
   BRepBndLib::Add(shape, box, false);
   if (!box.IsVoid()) {
@@ -360,19 +400,22 @@ std::vector<CylinderFace> Document::cylinders(std::size_t limit) const {
   return out;
 }
 
+// Scale-relative: absolute values wreck either tiny parts or huge assemblies
+// depending on which you pick.
+double Document::automaticDeflection() const {
+  double diag = 1.0;
+  if (m_bounds.valid) {
+    const auto s = m_bounds.size();
+    diag = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+  }
+  return std::max(diag * 1e-3, 1e-4);
+}
+
 bool Document::tessellate(double deflection, double angularDeg) {
+  std::lock_guard<std::recursive_mutex> held(m_impl->lock);
   if (angularDeg <= 0) angularDeg = m_impl->angularDegrees;
   if (m_impl->shape.IsNull()) return false;
-  if (deflection <= 0) {
-    // Scale-relative deflection: absolute values wreck either tiny parts or
-    // huge assemblies depending on which you pick.
-    double diag = 1.0;
-    if (m_bounds.valid) {
-      const auto s = m_bounds.size();
-      diag = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
-    }
-    deflection = std::max(diag * 1e-3, 1e-4);
-  }
+  if (deflection <= 0) deflection = automaticDeflection();
   deflection *= m_impl->deflectionMultiplier;
   m_deflection = deflection;
   try {
@@ -385,6 +428,7 @@ bool Document::tessellate(double deflection, double angularDeg) {
 }
 
 std::size_t Document::triangleCount() const {
+  std::lock_guard<std::recursive_mutex> held(m_impl->lock);
   std::size_t n = 0;
   for (TopExp_Explorer e(m_impl->shape, TopAbs_FACE); e.More(); e.Next()) {
     TopLoc_Location loc;
@@ -422,6 +466,7 @@ const char* surfaceTypeName(GeomAbs_SurfaceType t) {
 }  // namespace
 
 void Document::retessellate(double deflectionMultiplier) {
+  std::lock_guard<std::recursive_mutex> held(m_impl->lock);
   m_impl->deflectionMultiplier = std::max(deflectionMultiplier, 0.05);
   // Chordal deviation alone does not control facet count on curved faces: the
   // angular limit dominates there, so a finer setting must tighten both or a
@@ -430,31 +475,21 @@ void Document::retessellate(double deflectionMultiplier) {
   // BRepMesh leaves an existing triangulation alone, so without clearing it
   // first the new deflection is silently ignored.
   BRepTools::Clean(m_impl->shape);
-  m_impl->mesh = RenderMesh{};
-  m_impl->facesById.clear();
-  m_impl->edgesById.clear();
-  m_impl->meshBuilt = false;
+  // Ids survive: they come from the topology, which a re-mesh does not touch.
+  m_impl->mesh.reset();
 }
 
-const RenderMesh& Document::renderMesh(double deflection) {
-  if (m_impl->meshBuilt) return m_impl->mesh;
-  tessellate(deflection);
-
-  RenderMesh& out = m_impl->mesh;
-  m_impl->facesById.clear();
-  m_impl->edgesById.clear();
-
-  // Stable face ordering so faceId survives across calls.
-  TopTools_IndexedMapOfShape faceMap;
-  TopExp::MapShapes(m_impl->shape, TopAbs_FACE, faceMap);
-
-  for (Standard_Integer fi = 1; fi <= faceMap.Extent(); ++fi) {
-    const TopoDS_Face face = TopoDS::Face(faceMap(fi));
+void Document::Impl::extract(RenderMesh& out, Fidelity fidelity,
+                             const std::vector<TopoDS_Face>& faces,
+                             const std::vector<TopoDS_Edge>& edges,
+                             const TopoDS_Shape& from) const {
+  for (std::size_t fi = 0; fi < faces.size(); ++fi) {
+    const TopoDS_Face& face = faces[fi];
+    if (face.IsNull()) continue;
     TopLoc_Location loc;
     Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
 
-    const std::uint32_t faceId = static_cast<std::uint32_t>(m_impl->facesById.size());
-    m_impl->facesById.push_back(face);
+    const std::uint32_t faceId = static_cast<std::uint32_t>(fi);
     if (tri.IsNull() || tri->NbTriangles() == 0) continue;
 
     const gp_Trsf trsf = loc.Transformation();
@@ -489,7 +524,7 @@ const RenderMesh& Document::renderMesh(double deflection) {
         out.indices.push_back(baseVertex + b - 1);
         out.indices.push_back(baseVertex + c - 1);
       }
-    } else if (m_format.fidelity == Fidelity::BRep) {
+    } else if (fidelity == Fidelity::BRep) {
       // A B-rep face is smooth by construction and gets its own vertex range,
       // so averaging shared vertices within it gives smooth curvature while
       // edges between faces stay hard.
@@ -622,12 +657,12 @@ const RenderMesh& Document::renderMesh(double deflection) {
   // Scanning every face per edge is O(edges x faces) and dominates load time on
   // real assemblies (4.6 s -> milliseconds on a 500-part model).
   TopTools_IndexedDataMapOfShapeListOfShape edgeToFaces;
-  TopExp::MapShapesAndAncestors(m_impl->shape, TopAbs_EDGE, TopAbs_FACE, edgeToFaces);
+  TopExp::MapShapesAndAncestors(from, TopAbs_EDGE, TopAbs_FACE, edgeToFaces);
 
-  TopTools_IndexedMapOfShape edgeMap;
-  TopExp::MapShapes(m_impl->shape, TopAbs_EDGE, edgeMap);
-  for (Standard_Integer ei = 1; ei <= edgeMap.Extent(); ++ei) {
-    const TopoDS_Edge edge = TopoDS::Edge(edgeMap(ei));
+  for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+    const TopoDS_Edge& edge = edges[ei];
+    if (edge.IsNull()) continue;
+    const std::uint32_t edgeId = static_cast<std::uint32_t>(ei);
 
     // Prefer the polygon shared with a face triangulation; fall back to a
     // standalone 3D polygon.
@@ -661,11 +696,10 @@ const RenderMesh& Document::renderMesh(double deflection) {
         }
       }
     }
+    // An edge with no polyline at this detail level simply is not drawn. Its
+    // id still exists and still measures, which is why the id comes from the
+    // topology above rather than from this loop.
     if (pts.size() < 2) continue;
-
-    const std::uint32_t edgeId =
-        static_cast<std::uint32_t>(m_impl->edgesById.size());
-    m_impl->edgesById.push_back(edge);
 
     const std::uint32_t base =
         static_cast<std::uint32_t>(out.edgePositions.size() / 3);
@@ -681,10 +715,101 @@ const RenderMesh& Document::renderMesh(double deflection) {
     }
   }
 
-  out.edgeCount = static_cast<std::uint32_t>(m_impl->edgesById.size());
+  out.edgeCount = static_cast<std::uint32_t>(edges.size());
+}
 
-  m_impl->meshBuilt = true;
-  return out;
+// Ids have to mean the same thing on the copy as on the original, so each
+// entity is mapped through the copier rather than trusting two independent
+// traversals to come out in the same order.
+bool Document::Impl::ensureWorkbench() {
+  if (!workbench.IsNull()) return true;
+  if (shape.IsNull()) return false;
+  try {
+    BRepBuilderAPI_Copy copier(shape, Standard_True, Standard_False);
+    if (!copier.IsDone()) return false;
+    workbench = copier.Shape();
+    workbenchFaces.clear();
+    workbenchEdges.clear();
+    workbenchFaces.reserve(facesById.size());
+    workbenchEdges.reserve(edgesById.size());
+    for (const TopoDS_Face& face : facesById) {
+      const TopoDS_Shape made = copier.ModifiedShape(face);
+      workbenchFaces.push_back(made.IsNull() || made.ShapeType() != TopAbs_FACE
+                                   ? TopoDS_Face()
+                                   : TopoDS::Face(made));
+    }
+    for (const TopoDS_Edge& edge : edgesById) {
+      const TopoDS_Shape made = copier.ModifiedShape(edge);
+      workbenchEdges.push_back(made.IsNull() || made.ShapeType() != TopAbs_EDGE
+                                   ? TopoDS_Edge()
+                                   : TopoDS::Edge(made));
+    }
+  } catch (const Standard_Failure&) {
+    workbench.Nullify();
+    return false;
+  }
+  return true;
+}
+
+void Document::Impl::buildIdMaps() {
+  if (!facesById.empty() || !edgesById.empty()) return;
+  TopTools_IndexedMapOfShape faceMap;
+  TopExp::MapShapes(shape, TopAbs_FACE, faceMap);
+  facesById.reserve(static_cast<std::size_t>(faceMap.Extent()));
+  for (Standard_Integer i = 1; i <= faceMap.Extent(); ++i)
+    facesById.push_back(TopoDS::Face(faceMap(i)));
+
+  TopTools_IndexedMapOfShape edgeMap;
+  TopExp::MapShapes(shape, TopAbs_EDGE, edgeMap);
+  edgesById.reserve(static_cast<std::size_t>(edgeMap.Extent()));
+  for (Standard_Integer i = 1; i <= edgeMap.Extent(); ++i)
+    edgesById.push_back(TopoDS::Edge(edgeMap(i)));
+}
+
+const RenderMesh& Document::renderMesh(double deflection) {
+  std::lock_guard<std::recursive_mutex> held(m_impl->lock);
+  if (m_impl->mesh) return *m_impl->mesh;
+  tessellate(deflection);
+  auto built = std::make_shared<RenderMesh>();
+  m_impl->extract(*built, m_format.fidelity, m_impl->facesById,
+                  m_impl->edgesById, m_impl->shape);
+  m_impl->mesh = built;
+  return *m_impl->mesh;
+}
+
+Document::MeshLevel Document::buildMeshLevel(const DetailTarget& target) {
+  // Only serialises builds against each other. Queries do not take this, and
+  // nothing here writes to the original shape, so a build never makes a pick
+  // or a measurement wait.
+  std::lock_guard<std::mutex> building(m_impl->meshLock);
+  MeshLevel level;
+  if (!m_impl->ensureWorkbench()) return level;
+
+  const double deflection =
+      target.deflection > 0 ? target.deflection : automaticDeflection();
+  const double angular = std::clamp(target.angularDegrees, 0.5, 60.0);
+
+  // BRepMesh leaves an existing triangulation alone, so without clearing it
+  // first the new target is silently ignored and the mesh never changes.
+  try {
+    BRepTools::Clean(m_impl->workbench);
+    BRepMesh_IncrementalMesh mesher(m_impl->workbench, deflection,
+                                    Standard_False, angular * M_PI / 180.0,
+                                    Standard_True);
+    if (!mesher.IsDone()) return level;
+  } catch (const Standard_Failure&) {
+    return level;
+  }
+
+  auto built = std::make_shared<RenderMesh>();
+  m_impl->extract(*built, m_format.fidelity, m_impl->workbenchFaces,
+                  m_impl->workbenchEdges, m_impl->workbench);
+
+  level.mesh = built;
+  level.deflection = deflection;
+  level.angularDegrees = angular;
+  level.triangles = built->indices.size() / 3;
+  return level;
 }
 
 FaceInfo Document::faceInfo(std::uint32_t faceId) const {
