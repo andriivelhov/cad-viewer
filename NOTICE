@@ -1,0 +1,7 @@
+CAD Viewer bundles Open CASCADE Technology (OCCT).
+
+OCCT is licensed under the GNU Lesser General Public License version 2.1, with
+an additional exception permitting use in proprietary applications. Its full
+licence text ships inside the application bundle, under Contents/Resources.
+
+CAD Viewer's own source is MIT; see LICENSE.

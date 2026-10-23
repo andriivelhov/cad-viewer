@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This program links Open CASCADE Technology, which is licensed under the GNU
-Lesser General Public License version 2.1, with an additional exception
-permitting use in proprietary applications. Its licence text ships inside the
-application bundle at Contents/Resources.
