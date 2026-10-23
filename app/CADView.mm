@@ -47,6 +47,10 @@ constexpr float kFovYDegrees = 35.0f;
 // there makes the cursor flicker as the pointer crosses the boundary.
 constexpr CGFloat kTitlebarBand = 32.0;
 
+// Draft, Normal, Fine. Multiplies the scale-relative chordal deflection, and
+// scales the angular limit that dominates on small-radius curvature.
+constexpr double kTessellationMultipliers[] = {3.0, 1.0, 0.35};
+
 // Faces and edges share the identity buffer; the top bit says which.
 bool isEdgeId(uint32_t entityId) {
   return entityId != FACE_ID_NONE && (entityId & ENTITY_EDGE_FLAG) != 0;
@@ -649,6 +653,13 @@ typedef struct {
     return NO;
   }
 
+  // Apply the stored Detail setting before the mesh is built. applyStoredSettings
+  // only assigns the ivar, and retessellate runs from the setter, so a file
+  // opened from Finder or the command line was always meshed at the default -
+  // the setting appeared to do nothing until it was changed with a part open.
+  doc->retessellate(kTessellationMultipliers[std::clamp<NSInteger>(
+      _tessellationQuality, 0, 2)]);
+
   const cadcore::RenderMesh &mesh = doc->renderMesh();
   if (mesh.empty()) {
     if (outError) *outError = @"file loaded but produced no geometry";
@@ -848,8 +859,8 @@ typedef struct {
   if (!_doc) return;
   // Draft is coarser and faster; fine is denser and slower. The mesh has to be
   // rebuilt and re-uploaded, so this is the one setting that costs real time.
-  static const double multipliers[] = {3.0, 1.0, 0.35};
-  _doc->retessellate(multipliers[std::clamp<NSInteger>(quality, 0, 2)]);
+  _doc->retessellate(
+      kTessellationMultipliers[std::clamp<NSInteger>(quality, 0, 2)]);
   [self uploadMeshBuffers];
   [self setNeedsDisplay:YES];
 }
@@ -2301,6 +2312,15 @@ static constexpr float kSnapRadiusPixels = 14.0f;
 - (void)simulateDragFromX:(CGFloat)x1 y:(CGFloat)y1 toX:(CGFloat)x2 y:(CGFloat)y2 {
   [self beginDragAtPoint:NSMakePoint(x1, y1) panning:NO];
   [self continueDragToPoint:NSMakePoint(x2, y2) panning:NO];
+}
+
+- (NSString *)meshReport {
+  if (!_doc) return @"no document";
+  const auto &s = _doc->stats();
+  return [NSString stringWithFormat:@"%s faces %d triangles %zu deflection %.6f",
+                                    _doc->format().id.c_str(), s.faces,
+                                    _doc->renderMesh().indices.size() / 3,
+                                    _doc->deflection()];
 }
 
 - (NSString *)cameraReport {

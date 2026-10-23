@@ -70,6 +70,8 @@ typedef NS_ENUM(NSInteger, CADInteractionMode) {
 // Drive a drag the way the mouse would, for tests that cannot post events.
 - (void)simulateDragFromX:(CGFloat)x1 y:(CGFloat)y1 toX:(CGFloat)x2 y:(CGFloat)y2;
 - (NSString *)cameraReport;
+// Format, face count, triangle count and the chordal deflection actually used.
+- (NSString *)meshReport;
 - (CGFloat)titlebarBandHeight;
 - (NSString *)simulateMeasureFromX:(uint32_t)x1 y:(uint32_t)y1
                                toX:(uint32_t)x2 y:(uint32_t)y2

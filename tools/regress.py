@@ -96,14 +96,23 @@ for style, want in UNITS.items():
 defaults_clear("UnitStyle")
 
 print("\nDetail: quality changes the mesh but never the measurement")
+# This check used to assert only that the measurement was unchanged, which is
+# true whether or not the setting does anything - and it did not: the stored
+# quality was applied to the ivar but never to a document opened from Finder,
+# so every file was meshed at Normal. Assert the mesh actually moves.
 measurements = set()
+triangles = []
 for quality in (0, 1, 2):
     defaults_set("TessellationQuality", quality)
     out, _, _ = run(sample("column.step"), "--pick", "700", "500")
     measurements.add(out.split("⌀")[-1].strip())
+    stats, _, _ = run(sample("column.step"), "--stats")
+    triangles.append(int(stats.split("triangles")[1].split()[0]))
 defaults_clear("TessellationQuality")
 check("diameter identical at coarse, normal and fine detail",
       measurements, {"28.0000 mm  (r 14.0000)"})
+check("coarser detail really means fewer triangles",
+      triangles[0] < triangles[1] < triangles[2], True)
 
 print("\nRendering: every shading mode and background produces a real image")
 scratch = os.environ.get("TMPDIR", "/tmp")

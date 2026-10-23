@@ -565,7 +565,7 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
       [args containsObject:@"--render"] || [args containsObject:@"--pick"] ||
       [args containsObject:@"--cliptest"] || [args containsObject:@"--points"] ||
       [args containsObject:@"--measure"] || [args containsObject:@"--chromeshot"] ||
-      [args containsObject:@"--settingsshot"] || [args containsObject:@"--thumb"];
+      [args containsObject:@"--settingsshot"] || [args containsObject:@"--thumb"] || [args containsObject:@"--stats"];
 
   // A malformed headless flag used to fall through and silently open a window,
   // which looks exactly like a hang when the caller is waiting on stdout.
@@ -683,6 +683,11 @@ static NSString *const kRecentsKey = @"RecentDocumentPaths";
     printf("band %.0f\ntitlebar drag %s\nbody drag %s\n", band,
            [afterBand isEqualToString:before] ? "ignored" : "MOVED THE MODEL",
            [afterBody isEqualToString:afterBand] ? "IGNORED" : "orbits");
+    [self exitHeadless:0];
+  }
+
+  if ([args containsObject:@"--stats"]) {
+    printf("%s\n", [self.activeViewer meshReport].UTF8String);
     [self exitHeadless:0];
   }
 
