@@ -511,6 +511,31 @@ subviews with their own event handling, so they are unaffected.
 whether each strip moved the camera; `titlebarBandHeight` returning 0 makes it
 fail, which is how it was checked.
 
+## Shading
+
+The key light is carried with the camera, up and to the left of it. It used to
+be a fixed world vector, which meant orbiting a part swung its median brightness
+by 1.7x and the side facing away from the light fell to roughly luma 22 - black
+enough to lose all shape. Measured on a compression spring, the swing across the
+four standard views is now 1.17x and the dark tail sits at 53-74 rather than 30.
+
+Three terms, in order of what they buy:
+
+- **Wrapped diffuse.** A hard `N·L` puts a cliff at the terminator, which on a
+  tight cylinder lands as a visible band across the tube.
+- **Hemispheric ambient with a lifted floor.** The ground term is what the
+  shadow side settles on. At 0.20 it crushed; 0.34 costs a little contrast and
+  buys back the form.
+- **A narrow specular.** Barely visible on flat machined faces, but on a round
+  wire it is the only thing that says the section is circular. This was
+  deliberately absent before, on the reasoning that highlights fight the feature
+  edges - true for prismatic parts, wrong for anything turned or swept.
+
+The angular tessellation limit is 12 degrees at Normal, not 20. On a 0.25 mm
+wire the chordal deflection never binds - the angular limit does - and 20 gave
+an 18-sided prism with visible creases along every coil. The cost is real but
+small: a 500-part assembly goes from 598k to 982k triangles and 1.31 s to 1.43 s.
+
 ## Known rough edges
 
 - **A signed bundle blocks the next build.** Once the app has been signed and

@@ -16,7 +16,8 @@
 
 typedef struct {
   simd_float4x4 modelViewProjection;
-  simd_float4 lightDirection;  // xyz used
+  simd_float4 lightDirection;  // xyz used; points toward the light
+  simd_float4 eyePosition;     // xyz used; needed for the specular term
   simd_float4 baseColor;       // rgb used
   simd_float4 backgroundTop;
   simd_float4 backgroundBottom;

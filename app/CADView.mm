@@ -250,7 +250,14 @@ simd_float4x4 makeLookAt(simd_float3 eye, simd_float3 center, simd_float3 up) {
                                             error:&error];
     }
   }
-  NSAssert(library, @"shader library missing: %@", error);
+  // A nil library used to leave every pipeline nil and the app sitting in its
+  // run loop, which looks like a hang rather than a failure. Say what went
+  // wrong and stop.
+  if (!library) {
+    fprintf(stderr, "shader library failed to build: %s\n",
+            error.localizedDescription.UTF8String ?: "unknown error");
+    exit(3);
+  }
 
   MTLRenderPipelineDescriptor *(^base)(NSString *, NSString *) =
       ^(NSString *vs, NSString *fs) {
@@ -1081,8 +1088,19 @@ typedef struct {
       1.0f - (marginPixels + cubePixels) / (float(ds.width) * 0.5f),
       1.0f - (marginPixels + cubePixels) / (float(ds.height) * 0.5f),
       halfW, halfH);
-  const simd_float3 light = simd_normalize(simd_make_float3(0.4f, -0.7f, 0.9f));
+  // Key light carried with the camera, up and to the left of it, the way a
+  // studio light sits off-axis from the lens. A fixed world direction meant
+  // orbiting the part swung its brightness by nearly a factor of two and the
+  // far side fell to near black - a part should stay lit however you turn it.
+  simd_float3 right = simd_cross(viewDirection, simd_make_float3(0, 0, 1));
+  // Degenerate looking straight down the world up axis; any perpendicular does.
+  right = simd_length(right) > 1e-3f ? simd_normalize(right)
+                                     : simd_make_float3(1, 0, 0);
+  const simd_float3 cameraUp = simd_cross(right, viewDirection);
+  const simd_float3 light =
+      simd_normalize(-viewDirection + cameraUp * 0.55f - right * 0.40f);
   u.lightDirection = simd_make_float4(light.x, light.y, light.z, 0.0f);
+  u.eyePosition = simd_make_float4(eye.x, eye.y, eye.z, 1.0f);
   [self backgroundTop:&u.backgroundTop
                bottom:&u.backgroundBottom
                 model:&u.baseColor];

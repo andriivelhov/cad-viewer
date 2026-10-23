@@ -1,6 +1,11 @@
 #include <metal_stdlib>
 #include "ShaderTypes.h"
 
+// Before the runtime-compile fallback below, which uses float4x4 and friends
+// unqualified: without this the launch-time compile fails on every machine
+// that has no Metal toolchain.
+using namespace metal;
+
 #ifdef __RUNTIME_COMPILE__
 #define CUBE_FACE_FLAG 0x40000000u
 #define ENTITY_EDGE_FLAG 0x80000000u
@@ -9,6 +14,7 @@
 typedef struct {
   float4x4 modelViewProjection;
   float4 lightDirection;
+  float4 eyePosition;
   float4 baseColor;
   float4 backgroundTop;
   float4 backgroundBottom;
@@ -22,7 +28,6 @@ typedef struct {
   uint pad0;
 } Uniforms;
 #endif
-using namespace metal;
 
 // Matches cadcore::RenderVertex byte-for-byte.
 struct RenderVertex {
@@ -34,6 +39,7 @@ struct RenderVertex {
 struct ShadedOut {
   float4 clipPosition [[position]];
   float3 worldNormal;
+  float3 worldPosition;
   uint faceId;
   uint selected [[flat]];
 };
@@ -79,6 +85,7 @@ vertex ShadedOut vsShaded(uint vid [[vertex_id]],
   out.selected = faceSelected[v.faceId];
   out.clipPosition = u.modelViewProjection * float4(v.position, 1.0);
   out.worldNormal = float3(v.normal);  // model transform is identity
+  out.worldPosition = float3(v.position);
   out.faceId = v.faceId;
   return out;
 }
@@ -89,15 +96,28 @@ fragment FragmentOut fsShaded(ShadedOut in [[stage_in]],
   float3 n = normalize(in.worldNormal);
   if (!frontFacing) n = -n;  // back faces of open shells still shade sanely
 
-  // Hemispheric fill plus one key light: matte, even, no specular hotspots
-  // fighting the edges. This is what makes it read as CAD and not a game.
-  const float3 sky = float3(0.62, 0.67, 0.74);
-  const float3 ground = float3(0.20, 0.19, 0.18);
+  // Hemispheric fill plus one key light. The key now follows the camera, so a
+  // part stays lit however it is orbited; it used to be a fixed world vector
+  // and turning the model away from it dropped whole faces to near black.
+  const float3 sky = float3(0.60, 0.65, 0.72);
+  // The floor the shadow side settles on. At 0.20 it crushed to roughly luma
+  // 22 and lost all shape, which is what made a round wire read as a flat
+  // ribbon; the lift costs a little contrast and buys back the form.
+  const float3 ground = float3(0.34, 0.35, 0.37);
   const float hemi = n.z * 0.5 + 0.5;
   const float3 ambient = mix(ground, sky, hemi);
 
-  const float key = saturate(dot(n, normalize(u.lightDirection.xyz)));
-  const float3 lit = u.baseColor.rgb * (ambient * 0.55 + key * 0.75);
+  const float3 keyDir = normalize(u.lightDirection.xyz);
+  const float3 viewDir = normalize(u.eyePosition.xyz - in.worldPosition);
+  // Wrapped diffuse: a hard N·L puts a cliff at the terminator, which on a
+  // tight cylinder lands as a visible band.
+  const float wrap = saturate((dot(n, keyDir) + 0.35) / 1.35);
+  float3 lit = u.baseColor.rgb * (ambient * 0.62 + wrap * 0.60);
+
+  // A narrow specular. On flat machined faces it is barely there, but on a
+  // round wire it is the only thing that says the section is circular.
+  const float3 halfVector = normalize(keyDir + viewDir);
+  lit += float3(pow(saturate(dot(n, halfVector)), 42.0) * 0.30);
 
   // Wireframe: paint surfaces in the background gradient so they still occlude
   // the edges behind them, which is what makes hidden-line removal work.
@@ -109,7 +129,7 @@ fragment FragmentOut fsShaded(ShadedOut in [[stage_in]],
     return wire;
   }
 
-  float3 color = lit;
+  float3 color = saturate(lit);
   if (in.selected != 0u)
     color = mix(color, float3(1.00, 0.58, 0.16), 0.72);
   else if (in.faceId == u.hoverEntityId)

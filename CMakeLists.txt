@@ -52,6 +52,7 @@ execute_process(COMMAND ${XCRUN} -sdk macosx metal --version
                 RESULT_VARIABLE METAL_TOOLCHAIN_MISSING
                 OUTPUT_QUIET ERROR_QUIET)
 if(METAL_TOOLCHAIN_MISSING EQUAL 0)
+  set(HAVE_METAL_TOOLCHAIN TRUE)
   message(STATUS "Metal toolchain found: precompiling shaders")
   add_custom_command(
     OUTPUT ${METAL_LIB}
@@ -62,9 +63,33 @@ if(METAL_TOOLCHAIN_MISSING EQUAL 0)
     COMMENT "Compiling Metal shaders")
   add_custom_target(shaders DEPENDS ${METAL_LIB})
 else()
+  set(HAVE_METAL_TOOLCHAIN FALSE)
   message(STATUS "Metal toolchain absent: shaders will compile at launch "
                  "(run: xcodebuild -downloadComponent MetalToolchain)")
-  add_custom_target(shaders)
+  # Delete any metallib left by an earlier build that did have the toolchain.
+  # The app prefers the compiled library over the source, so a stale one wins
+  # over the shader actually being edited: every change silently does nothing,
+  # and a change to the Uniforms layout renders garbage rather than failing.
+  add_custom_target(shaders
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${METAL_LIB}
+    COMMENT "Removing stale metallib so the launch-time compile is used"
+    VERBATIM)
+endif()
+
+# Only ship the compiled library when there is one to compile it with; the
+# shader source is always shipped, because that is the launch-time fallback.
+if(HAVE_METAL_TOOLCHAIN)
+  set(METAL_LIB_RESOURCE ${METAL_LIB})
+  set(COPY_METALLIB_TO_THUMB COMMAND ${CMAKE_COMMAND} -E copy ${METAL_LIB}
+      ${CMAKE_CURRENT_BINARY_DIR}/CADThumbnail.appex/Contents/Resources/default.metallib)
+  set(COPY_METALLIB_TO_PREVIEW COMMAND ${CMAKE_COMMAND} -E copy ${METAL_LIB}
+      ${CMAKE_CURRENT_BINARY_DIR}/CADPreview.appex/Contents/Resources/default.metallib)
+else()
+  set(METAL_LIB_RESOURCE "")
+  set(COPY_METALLIB_TO_THUMB COMMAND ${CMAKE_COMMAND} -E rm -f
+      ${CMAKE_CURRENT_BINARY_DIR}/CADThumbnail.appex/Contents/Resources/default.metallib)
+  set(COPY_METALLIB_TO_PREVIEW COMMAND ${CMAKE_COMMAND} -E rm -f
+      ${CMAKE_CURRENT_BINARY_DIR}/CADPreview.appex/Contents/Resources/default.metallib)
 endif()
 
 # A notarised bundle is write-protected by macOS - not just its signature, but
@@ -93,13 +118,15 @@ add_custom_target(clean_app_bundle
 # Listing the metallib as a bundle resource makes it a real build dependency.
 # A POST_BUILD copy only runs when the target relinks, which silently ships a
 # stale shader library whenever only the .metal source changed.
-set_source_files_properties(${METAL_LIB} PROPERTIES
-  MACOSX_PACKAGE_LOCATION Resources GENERATED TRUE)
+if(HAVE_METAL_TOOLCHAIN)
+  set_source_files_properties(${METAL_LIB} PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources GENERATED TRUE)
+endif()
 set_source_files_properties(${METAL_SRC} PROPERTIES
   MACOSX_PACKAGE_LOCATION Resources HEADER_FILE_ONLY TRUE)
 
 add_executable(CADViewer MACOSX_BUNDLE
-  app/main.mm app/CADView.mm ${METAL_SRC} ${METAL_LIB})
+  app/main.mm app/CADView.mm ${METAL_SRC} ${METAL_LIB_RESOURCE})
 add_dependencies(CADViewer shaders clean_app_bundle)
 target_include_directories(CADViewer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app)
 target_link_libraries(CADViewer PRIVATE cadcore
@@ -157,8 +184,7 @@ add_custom_target(assemble_thumbnail_appex ALL
           ${APPEX_DIR}/Contents/Info.plist
   # Inside an appex, NSBundle.mainBundle is the appex, so it needs its own
   # copy of the shaders.
-  COMMAND ${CMAKE_COMMAND} -E copy ${METAL_LIB}
-          ${APPEX_DIR}/Contents/Resources/default.metallib
+  ${COPY_METALLIB_TO_THUMB}
   COMMAND ${CMAKE_COMMAND} -E copy ${METAL_SRC}
           ${APPEX_DIR}/Contents/Resources/Shaders.metal
   COMMENT "Assembling CADThumbnail.appex"
@@ -192,8 +218,7 @@ add_custom_target(assemble_preview_appex ALL
   COMMAND ${CMAKE_COMMAND} -E copy
           ${CMAKE_CURRENT_SOURCE_DIR}/app/quicklook/PreviewInfo.plist
           ${PREVIEW_APPEX_DIR}/Contents/Info.plist
-  COMMAND ${CMAKE_COMMAND} -E copy ${METAL_LIB}
-          ${PREVIEW_APPEX_DIR}/Contents/Resources/default.metallib
+  ${COPY_METALLIB_TO_PREVIEW}
   COMMAND ${CMAKE_COMMAND} -E copy ${METAL_SRC}
           ${PREVIEW_APPEX_DIR}/Contents/Resources/Shaders.metal
   COMMENT "Assembling CADPreview.appex"

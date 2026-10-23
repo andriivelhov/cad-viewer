@@ -60,7 +60,7 @@ struct Document::Impl {
   RenderMesh mesh;
   bool meshBuilt = false;
   double deflectionMultiplier = 1.0;
-  double angularDegrees = 20.0;
+  double angularDegrees = 12.0;
 };
 
 namespace {
@@ -426,7 +426,7 @@ void Document::retessellate(double deflectionMultiplier) {
   // Chordal deviation alone does not control facet count on curved faces: the
   // angular limit dominates there, so a finer setting must tighten both or a
   // cylinder keeps exactly the same number of facets.
-  m_impl->angularDegrees = std::clamp(20.0 * deflectionMultiplier, 6.0, 45.0);
+  m_impl->angularDegrees = std::clamp(12.0 * deflectionMultiplier, 5.0, 45.0);
   // BRepMesh leaves an existing triangulation alone, so without clearing it
   // first the new deflection is silently ignored.
   BRepTools::Clean(m_impl->shape);
